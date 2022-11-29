@@ -1,0 +1,327 @@
+---
+title: "16S.Gala.PH.2021"
+Author: "Rose.KV."
+output: html_notebook
+---
+#Libraries needed
+```{r}
+library("phyloseq")
+library("ggplot2")
+library("ape")
+library("gridExtra")
+library("ggpubr")
+library("ggsignif")
+library(forcats)
+library(vegan)
+library(cowplot)
+library(tidyverse)
+theme_set(theme_cowplot())
+set.seed(7)
+source("C:/users/kithanro/Documents/16s_Gala_postharvest_2021/DenefLab-MicrobeMiseq/R/miseqR.R")
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/kithanro/Documents/16s_Gala_postharvest_2021")
+```
+
+
+#Phyloseq object
+```{r echo=TRUE}
+#read in otu table
+otu_table <- read.table("OTU_table.txt",
+                        sep="\t",row.names = 1,header = TRUE) %>%
+  as.matrix(otu_table,rownames=TRUE)
+
+#read in taxonomy
+taxonomy <- read_delim("taxonomy.csv", delim = ",", col_names = TRUE) %>% 
+  column_to_rownames(var = "OTU_ID") %>%
+  as.matrix()
+
+#read in metadata
+metadata=read.table("Sample_metadata.tsv", sep = "\t", header = TRUE,
+                    row.names=1, na.strings = "")  %>%
+  mutate(Timepoints = factor(Timepoints, ordered = TRUE, levels = c("Day 0", "Day 7", "Day 14", "Day 25", "Day 49")))
+metadata
+phy_tree = read_tree("tree.nwk")
+
+#import as phyloseq objects
+OTU = otu_table(otu_table,taxa_are_rows=TRUE)
+TAX = tax_table(taxonomy)
+META = sample_data(metadata)
+#Physeq object
+physeq <- phyloseq(OTU,TAX,META,phy_tree)
+```
+
+#Fitering Chloroplast and Mitocondria OTUs
+```{r}
+`%notin%` <- Negate(`%in%`)
+# #Filtering samples *maybe only works on data frames
+# physeq_filtered <- subset_taxa(physeq, Order %notin% "Chloroplast", 
+#                                Family %notin% "Mitochondria")
+
+#physeq <- physeq_filtered
+physeq_filtered <- physeq %>% 
+  
+  subset_taxa(Order != "Chloroplast") %>%
+  subset_taxa(Family != "Mitohondria")
+
+#check reads per sample
+test_df <- as.data.frame(sample_sums(physeq_filtered)) %>% #sum reads per sample
+  rownames_to_column(var = "Sample_ID") #format for plot
+
+# make the plot
+test_plot <- ggplot(test_df, aes(x = reorder(Sample_ID, -`sample_sums(physeq_filtered)`), #orders axis
+                                 y = `sample_sums(physeq_filtered)`
+                                 )) + 
+  geom_col() + ylab("Reads per sample") + xlab("Sample_ID") + #clean up labels
+  theme(axis.text.x = element_text(angle = -90, hjust=0))
+test_plot
+
+# more filtering to remove samples that didn't sequence well or OTUs that may not be real 
+  physeq_filtered2 <- physeq_filtered %>%
+  prune_samples(sample_sums(.) >= 1000, .) #remove samples with <=1000 reads per samples
+  
+# prune_taxa(taxa_sums(.) >= 2, .) # remove taxa with <=2 reads per OTU
+  
+# subset samples to each read numbers 
+  
+#extrct sample df from phylose object
+test_samp <- sample_data(physeq_filtered2)
+```
+
+# Phylum bar plots
+
+### Control : No chloroplast and low reads filtered
+
+Format phyloseq object, remove chloroplasts, calculate mean abundace per group
+
+```{r}
+phylum <- physeq_filtered2 %>%
+  subset_taxa(Family != "Mitochondria")%>%
+  subset_taxa(Family != "Chloroplast")%>%
+  subset_samples(Timepoints != "ASM-treated") %>%
+  subset_samples(Timepoints != "None") %>%
+  subset_samples(Treatments == "Control") %>%
+  tax_glom("Phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+#make it after making the bar plot. Other because it is very less.
+  #mutate(Phylum = recode(Phylum,
+                        # "Armatimonadetes" = "Other",
+                         #"candidate_division_WPS-1" = "Other",
+                         #"Chlamydiae" = "Other", 
+                         #"Deinococcus-Thermus" = "Other",
+                         #"Fusobacteria" = "Other", 
+                         #"Nitrospirae" = "Other", 
+                         #"Parcubacteria" = "Other",
+                         #"Synergistetes" = "Other" )) %>% 
+
+  group_by(OTU, Tissue_types, Timepoints, Treatments, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+
+Make the plot 
+
+```{r}
+plot_phylum <- phylum %>%
+  ggplot(aes(x = Timepoints, y = Mean_abund, fill = Phylum, 
+             Tissue_types)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(~Tissue_types) +
+  # Clean up labels
+  ylab("Relative Abundance") +
+  ggtitle("Control filtered-low reads, mitochondria and chloroplast") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) #reduce legend size
+  # customize plot colors
+  # scale_fill_manual(name = "Phylum", #legend name
+  #                   #breaks = phy_names13, #call legend labels
+  #                   labels = phy_labels13, #cleaned up labels
+  #                   values = phy_colors13, #custom colors 
+  #                   guide = guide_legend(ncol = 1)) #force one column 
+plot_phylum
+```
+
+# Phylum bar plots
+
+### ASM-treated : No chloroplast and low reads filtered
+
+Format phyloseq object, remove chloroplasts, calculate mean abundace per group
+
+```{r}
+phylum <- physeq_filtered2 %>%
+  subset_taxa(Family != "Mitochondria")%>%
+  subset_taxa(Family != "Chloroplast")%>%
+  subset_samples(Timepoints != "Control") %>%
+  subset_samples(Timepoints != "None") %>%
+  subset_samples(Treatments == "ASM-treated") %>%
+  tax_glom("Phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+#make it after making the bar plot. Other because it is very less.
+  #mutate(Phylum = recode(Phylum,
+                        # "Armatimonadetes" = "Other",
+                         #"candidate_division_WPS-1" = "Other",
+                         #"Chlamydiae" = "Other", 
+                         #"Deinococcus-Thermus" = "Other",
+                         #"Fusobacteria" = "Other", 
+                         #"Nitrospirae" = "Other", 
+                         #"Parcubacteria" = "Other",
+                         #"Synergistetes" = "Other" )) %>% 
+
+  group_by(OTU, Tissue_types, Timepoints, Treatments, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+
+Make the plot 
+
+```{r}
+plot_phylum <- phylum %>%
+  ggplot(aes(x = Timepoints, y = Mean_abund, fill = Phylum, 
+             Tissue_types)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(~Tissue_types) +
+  # Clean up labels
+  ylab("Relative Abundance") +
+  ggtitle("ASM-treated filtered-low reads, mitochondria and chloroplast") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) #reduce legend size
+  # customize plot colors
+  # scale_fill_manual(name = "Phylum", #legend name
+  #                   #breaks = phy_names13, #call legend labels
+  #                   labels = phy_labels13, #cleaned up labels
+  #                   values = phy_colors13, #custom colors 
+  #                   guide = guide_legend(ncol = 1)) #force one column 
+plot_phylum
+```
+
+# Phylum bar plots
+
+### Compare control Vs treated in Pulp: No chloroplast and low reads filtered
+
+Format phyloseq object, remove chloroplasts, calculate mean abundace per group
+
+```{r}
+phylum <- physeq_filtered2 %>%
+  subset_taxa(Family != "Mitochondria")%>%
+  subset_taxa(Family != "Chloroplast")%>%
+  subset_samples(Timepoints != "None") %>%
+  subset_samples(Timepoints != "Day 14") %>%
+  subset_samples(Tissue_types != "Skin") %>%
+  tax_glom("Phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+#make it after making the bar plot. Other because it is very less.
+  #mutate(Phylum = recode(Phylum,
+                        # "Armatimonadetes" = "Other",
+                         #"candidate_division_WPS-1" = "Other",
+                         #"Chlamydiae" = "Other", 
+                         #"Deinococcus-Thermus" = "Other",
+                         #"Fusobacteria" = "Other", 
+                         #"Nitrospirae" = "Other", 
+                         #"Parcubacteria" = "Other",
+                         #"Synergistetes" = "Other" )) %>% 
+
+  group_by(OTU, Tissue_types, Timepoints, Treatments, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+
+
+Make the plot 
+
+```{r}
+plot_phylum <- phylum %>%
+  ggplot(aes(x = Timepoints, y = Mean_abund, fill = Phylum, Treatments)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(~Treatments, scales = "free") +
+  # Clean up labels
+  ylab("Relative Abundance") +
+  ggtitle("Pulp- filtered low reads, mitochondria and chloroplast") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) #reduce legend size
+  # customize plot colors
+  # scale_fill_manual(name = "Phylum", #legend name
+  #                   #breaks = phy_names13, #call legend labels
+  #                   labels = phy_labels13, #cleaned up labels
+  #                   values = phy_colors13, #custom colors 
+  #                   guide = guide_legend(ncol = 1)) #force one column 
+plot_phylum
+```
+
+# Phylum bar plots
+
+### Compare control Vs treated in Skin: No chloroplast and low reads filtered
+
+Format phyloseq object, remove chloroplasts, calculate mean abundace per group
+
+```{r}
+phylum <- physeq_filtered2 %>%
+  subset_taxa(Family != "Mitochondria")%>%
+  subset_taxa(Family != "Chloroplast")%>%
+  subset_samples(Timepoints != "None") %>%
+  subset_samples(Tissue_types != "Pulp") %>%
+  tax_glom("Phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+#make it after making the bar plot. Other because it is very less.
+  #mutate(Phylum = recode(Phylum,
+                        # "Armatimonadetes" = "Other",
+                         #"candidate_division_WPS-1" = "Other",
+                         #"Chlamydiae" = "Other", 
+                         #"Deinococcus-Thermus" = "Other",
+                         #"Fusobacteria" = "Other", 
+                         #"Nitrospirae" = "Other", 
+                         #"Parcubacteria" = "Other",
+                         #"Synergistetes" = "Other" )) %>% 
+
+  group_by(OTU, Tissue_types, Timepoints, Treatments, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+
+
+Make the plot 
+
+```{r}
+plot_phylum <- phylum %>%
+  ggplot(aes(x = Timepoints, y = Mean_abund, fill = Phylum, Treatments)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(~Treatments, scales = "free") +
+  # Clean up labels
+  ylab("Relative Abundance") +
+  ggtitle("Skin- filtered low reads, mitochondria and chloroplast") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) #reduce legend size
+  # customize plot colors
+  # scale_fill_manual(name = "Phylum", #legend name
+  #                   #breaks = phy_names13, #call legend labels
+  #                   labels = phy_labels13, #cleaned up labels
+  #                   values = phy_colors13, #custom colors 
+  #                   guide = guide_legend(ncol = 1)) #force one column 
+plot_phylum
+```

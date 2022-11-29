@@ -1,0 +1,1882 @@
+---
+title: "16S.Gala.PH.2021"
+Author: "Rose.KV."
+output: html_notebook
+---
+#Libraries needed
+```{r}
+library("phyloseq")
+library("ggplot2")
+library("ape")
+library("gridExtra")
+library("ggpubr")
+library("ggsignif")
+library(forcats)
+library(vegan)
+library(cowplot)
+library(tidyverse)
+theme_set(theme_cowplot())
+set.seed(7)
+source("C:/users/kithanro/Documents/16s_Gala_postharvest_2021/DenefLab-MicrobeMiseq/R/miseqR.R")
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/kithanro/Documents/16s_Gala_postharvest_2021")
+```
+
+
+#Phyloseq object
+```{r echo=TRUE}
+#read in otu table
+otu_table <- read.table("OTU_table.txt",
+                        sep="\t",row.names = 1,header = TRUE) %>%
+  as.matrix(otu_table,rownames=TRUE)
+
+#read in taxonomy
+taxonomy <- read_delim("taxonomy.csv", delim = ",", col_names = TRUE) %>% 
+  column_to_rownames(var = "OTU_ID") %>%
+  as.matrix()
+
+#read in metadata
+metadata=read.table("Sample_metadata.tsv", sep = "\t", header = TRUE,
+                    row.names=1, na.strings = "")  %>%
+  mutate(Timepoints = factor(Timepoints, ordered = TRUE, levels = c("Day 0", "Day 7", "Day 14", "Day 25", "Day 49")))
+metadata
+phy_tree = read_tree("tree.nwk")
+
+#import as phyloseq objects
+OTU = otu_table(otu_table,taxa_are_rows=TRUE)
+TAX = tax_table(taxonomy)
+META = sample_data(metadata)
+#Physeq object
+physeq <- phyloseq(OTU,TAX,META,phy_tree) #1796 taxa and 174 samples 
+```
+
+#Fitering Chloroplast and Mitocondria OTUs
+```{r}
+`%notin%` <- Negate(`%in%`)
+# #Filtering samples *maybe only works on data frames
+# physeq_filtered <- subset_taxa(physeq, Order %notin% "Chloroplast", 
+#                                Family %notin% "Mitochondria")
+
+#physeq <- physeq_filtered
+physeq_filtered <- physeq %>% 
+  
+  subset_taxa(Order != " Chloroplast") %>%
+  subset_taxa(Family != " Mitohondria") #1469 taxa and 174 samples 
+
+#check reads per sample
+test_df <- as.data.frame(sample_sums(physeq_filtered)) %>% #sum reads per sample
+  rownames_to_column(var = "Sample_ID") #format for plot
+
+# make the plot
+test_plot <- ggplot(test_df, aes(x = reorder(Sample_ID, -`sample_sums(physeq_filtered)`), #orders axis
+                                 y = `sample_sums(physeq_filtered)`
+                                 )) + 
+  geom_col() + ylab("Reads per sample") + xlab("Sample_ID") + #clean up labels
+  theme(axis.text.x = element_text(angle = -90, hjust=0))
+test_plot
+
+# more filtering to remove samples that didn't sequence well or OTUs that may not be real 
+  physeq_filtered2 <- physeq_filtered %>%  
+  prune_samples(sample_sums(.) >= 1000, .) #remove samples with <=1000 reads per samples    #1469 taxa and 148 samples
+  
+# prune_taxa(taxa_sums(.) >= 2, .) # remove taxa with <=2 reads per OTU
+  
+# subset samples to each read numbers 
+  
+#extrct sample df from phylose object
+test_samp <- sample_data(physeq_filtered2)
+```
+
+#Alpha diversity for Control
+```{r fig.width=10, fig.height=40}
+alpha_diversity <- estimate_richness(physeq_filtered2, measures = c("Shannon", "Chao1"))
+df_alpha <- data.frame(alpha_diversity, sample_data(physeq_filtered2))
+df <- reshape2::melt(df_alpha,
+                     measure.var=c("Shannon","Chao1"),
+                     id.vars=c("Timepoints", "Treatments", "Tissue_types"))
+df2 <- df %>%
+  #mutate(value = as.numeric(value)) %>% 
+  #as.numeric(df$value)
+  filter(Timepoints != "None") %>% 
+  filter(Timepoints != "Day 14") %>% 
+  filter(Tissue_types != "Pulp") 
+   
+ 
+#selecting the rows corresponding to each index from the main dataframe
+shannon = dplyr::filter(df2, variable == "Shannon")
+chao = dplyr::filter(df2, variable == "Chao1")
+```
+
+
+
+
+#Alpha diversity for Control
+```{r fig.width=10, fig.height=40}
+# alpha_diversity <- estimate_richness(physeq_filtered2, measures = c("Shannon", "Chao1"))
+# df_alpha <- data.frame(alpha_diversity, sample_data(physeq_filtered2))
+# df <- reshape2::melt(df_alpha,
+#                      measure.var=c("Shannon","Chao1"),
+#                      id.vars=c("Timepoints", "Treatments"))
+# df2 <- df %>%
+#   #mutate(value = as.numeric(value)) %>% 
+#   #as.numeric(df$value)
+#   filter(Timepoints != "None") %>% 
+#   filter(Treatments != "None") %>%
+#   filter(Treatments == "Control" | Treatments == "ASM-treated")
+# #selecting the rows corresponding to each index from the main dataframe
+# shannon = dplyr::filter(df2, variable == "Shannon")
+# chao = dplyr::filter(df2, variable == "Chao1")
+```
+
+
+##Alpha diversity plot
+```{r}
+library(ggsci)
+#facet example
+facet_plot <- df2 %>% 
+  #filter(variable == "Shannon") %>%
+  ggplot(aes(x = Timepoints, y = value, fill = Treatments)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(color="black", size=1, alpha=0.5, 
+             position = position_jitterdodge(jitter.width = 0.1)) +
+  facet_grid(variable~Timepoints, scales = "free") +
+  labs(y="Alpha Diversity Index", x="Timepoints") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+  theme_classic() + 
+  theme(axis.title.x=element_blank()) + 
+  ggtitle("For Skin- filtered low reads, mitochondria and chloroplast") +
+   scale_fill_aaas()
+facet_plot
+##################### Running box plot #############################
+# shannon_plot <- shannon %>% #shannon_box, chao1_box
+#   ggplot(aes(x = Treatments, y = value, fill = Timepoints)) +
+#   geom_boxplot(outlier.shape = NA) +
+#   geom_jitter(color="black", size=1, alpha=0.5) +
+#   labs(y="Shannon", x="Treatments") +
+#   annotate("text", x = 2, y = 3.2, label = "Kruskal-Wallis, p = 0.0097", colour = "black") +
+#   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+#   theme_classic() + 
+#   theme(axis.title.x=element_blank()) + 
+#    scale_fill_aaas()
+# 
+# shannon_plot
+# chao_plot <- chao %>% #shannon_box, chao1_box
+#   ggplot(aes(x = Treatments, y = value, fill = Timepoints)) +
+#   geom_boxplot(outlier.shape = NA) +
+#   geom_jitter(color="black", size=1, alpha=0.5) +
+#   labs(y="Chao1", x="Treatments") +
+#   annotate("text", x = 2, y = 130, label = "Kruskal-Wallis, p = 0.0032", colour = "black") +
+#   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+#   theme_classic() + 
+#   theme(axis.title.x=element_blank()) + 
+#    scale_fill_aaas()
+#  chao_plot
+```
+
+#Alpha diversity comparing beteen treatments for pulp
+```{r fig.width=10, fig.height=40}
+alpha_diversity <- estimate_richness(physeq_filtered2, measures = c("Shannon", "Chao1"))
+df_alpha <- data.frame(alpha_diversity, sample_data(physeq_filtered2))
+df <- reshape2::melt(df_alpha,
+                     measure.var=c("Shannon","Chao1"),
+                     id.vars=c("Timepoints", "Treatments", "Tissue_types"))
+df2 <- df %>%
+  #mutate(value = as.numeric(value)) %>% 
+  #as.numeric(df$value)
+  filter(Timepoints != "None") %>% 
+  filter(Timepoints != "Day 14") %>% 
+  filter(Tissue_types != "Skin") 
+   
+ 
+#selecting the rows corresponding to each index from the main dataframe
+shannon = dplyr::filter(df2, variable == "Shannon")
+chao = dplyr::filter(df2, variable == "Chao1")
+```
+
+
+
+
+#Alpha diversity for Control
+```{r fig.width=10, fig.height=40}
+# alpha_diversity <- estimate_richness(physeq_filtered2, measures = c("Shannon", "Chao1"))
+# df_alpha <- data.frame(alpha_diversity, sample_data(physeq_filtered2))
+# df <- reshape2::melt(df_alpha,
+#                      measure.var=c("Shannon","Chao1"),
+#                      id.vars=c("Timepoints", "Treatments"))
+# df2 <- df %>%
+#   #mutate(value = as.numeric(value)) %>% 
+#   #as.numeric(df$value)
+#   filter(Timepoints != "None") %>% 
+#   filter(Treatments != "None") %>%
+#   filter(Treatments == "Control" | Treatments == "ASM-treated")
+# #selecting the rows corresponding to each index from the main dataframe
+# shannon = dplyr::filter(df2, variable == "Shannon")
+# chao = dplyr::filter(df2, variable == "Chao1")
+```
+
+
+##Alpha diversity plot
+```{r}
+library(ggsci)
+#facet example
+facet_plot <- df2 %>% 
+  #filter(variable == "Shannon") %>%
+  ggplot(aes(x = Timepoints, y = value, fill = Treatments)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(color="black", size=1, alpha=0.5, 
+             position = position_jitterdodge(jitter.width = 0.1)) +
+  facet_grid(variable~Timepoints, scales = "free") +
+  labs(y="Alpha Diversity Index", x="Timepoints") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+  theme_classic() + 
+  theme(axis.title.x=element_blank()) + 
+  ggtitle("Pulp- filtered low reads, mitochondria and chloroplast") +
+   scale_fill_aaas()
+facet_plot
+##################### Running box plot #############################
+# shannon_plot <- shannon %>% #shannon_box, chao1_box
+#   ggplot(aes(x = Treatments, y = value, fill = Timepoints)) +
+#   geom_boxplot(outlier.shape = NA) +
+#   geom_jitter(color="black", size=1, alpha=0.5) +
+#   labs(y="Shannon", x="Treatments") +
+#   annotate("text", x = 2, y = 3.2, label = "Kruskal-Wallis, p = 0.0097", colour = "black") +
+#   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+#   theme_classic() + 
+#   theme(axis.title.x=element_blank()) + 
+#    scale_fill_aaas()
+# 
+# shannon_plot
+# chao_plot <- chao %>% #shannon_box, chao1_box
+#   ggplot(aes(x = Treatments, y = value, fill = Timepoints)) +
+#   geom_boxplot(outlier.shape = NA) +
+#   geom_jitter(color="black", size=1, alpha=0.5) +
+#   labs(y="Chao1", x="Treatments") +
+#   annotate("text", x = 2, y = 130, label = "Kruskal-Wallis, p = 0.0032", colour = "black") +
+#   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+#   theme_classic() + 
+#   theme(axis.title.x=element_blank()) + 
+#    scale_fill_aaas()
+#  chao_plot
+```
+
+#Alpha diversity for ASM-treated
+```{r fig.width=10, fig.height=40}
+alpha_diversity <- estimate_richness(physeq_filtered2, measures = c("Shannon", "Chao1"))
+df_alpha <- data.frame(alpha_diversity, sample_data(physeq_filtered2))
+df <- reshape2::melt(df_alpha,
+                     measure.var=c("Shannon","Chao1"),
+                     id.vars=c("Timepoints", "Treatments", "Tissue_types"))
+df3 <- df %>%
+  #mutate(value = as.numeric(value)) %>% 
+  #as.numeric(df$value)
+  filter(Timepoints != "None") %>% 
+  filter(Treatments == "ASM-treated") %>%
+  filter(Treatments != "Control")
+#selecting the rows corresponding to each index from the main dataframe
+shannon = dplyr::filter(df3, variable == "Shannon")
+chao = dplyr::filter(df3, variable == "Chao1")
+```
+
+
+##Alpha diversity plot at different time points in ASM-treated samples
+```{r}
+library(ggsci)
+#facet example
+facet_plot2 <- df3 %>% 
+  #filter(variable == "Shannon") %>%
+  ggplot(aes(x = Tissue_types, y = value, fill = Timepoints)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(color="black", size=1, alpha=0.5, 
+             position = position_jitterdodge(jitter.width = 0.1)) +
+  facet_grid(variable~., scales = "free") +
+  labs(y="Alpha Diversity Index", x="Tissue_types") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+  theme_classic() + 
+  theme(axis.title.x=element_blank()) + 
+  ggtitle("ASM-treated- filtered-low reads, mitochondria and chloroplast") +
+   scale_fill_aaas()
+facet_plot2
+##################### Running box plot #############################
+# shannon_plot <- shannon %>% #shannon_box, chao1_box
+#   ggplot(aes(x = Treatments, y = value, fill = Timepoints)) +
+#   geom_boxplot(outlier.shape = NA) +
+#   geom_jitter(color="black", size=1, alpha=0.5) +
+#   labs(y="Shannon", x="Treatments") +
+#   annotate("text", x = 2, y = 3.2, label = "Kruskal-Wallis, p = 0.0097", colour = "black") +
+#   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+#   theme_classic() + 
+#   theme(axis.title.x=element_blank()) + 
+#    scale_fill_aaas()
+# 
+# shannon_plot
+# chao_plot <- chao %>% #shannon_box, chao1_box
+#   ggplot(aes(x = Treatments, y = value, fill = Timepoints)) +
+#   geom_boxplot(outlier.shape = NA) +
+#   geom_jitter(color="black", size=1, alpha=0.5) +
+#   labs(y="Chao1", x="Treatments") +
+#   annotate("text", x = 2, y = 130, label = "Kruskal-Wallis, p = 0.0032", colour = "black") +
+#   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+#   theme_classic() + 
+#   theme(axis.title.x=element_blank()) + 
+#    scale_fill_aaas()
+#  chao_plot
+```
+
+#Alpha diversity for control
+```{r fig.width=10, fig.height=40}
+alpha_diversity <- estimate_richness(physeq_filtered2, measures = c("Shannon", "Chao1"))
+df_alpha <- data.frame(alpha_diversity, sample_data(physeq_filtered2))
+df <- reshape2::melt(df_alpha,
+                     measure.var=c("Shannon","Chao1"),
+                     id.vars=c("Timepoints", "Treatments", "Tissue_types"))
+df3 <- df %>%
+  #mutate(value = as.numeric(value)) %>% 
+  #as.numeric(df$value)
+  filter(Timepoints != "None") %>% 
+  filter(Treatments != "ASM-treated") %>%
+  filter(Treatments == "Control")
+#selecting the rows corresponding to each index from the main dataframe
+shannon = dplyr::filter(df3, variable == "Shannon")
+chao = dplyr::filter(df3, variable == "Chao1")
+```
+
+
+##Alpha diversity plot at different time points in ASM-treated samples
+```{r}
+library(ggsci)
+#facet example
+facet_plot2 <- df3 %>% 
+  #filter(variable == "Shannon") %>%
+  ggplot(aes(x = Tissue_types, y = value, fill = Timepoints)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(color="black", size=1, alpha=0.5, 
+             position = position_jitterdodge(jitter.width = 0.1)) +
+  facet_grid(variable~., scales = "free") +
+  labs(y="Alpha Diversity Index", x="Tissue_types") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+  theme_classic() + 
+  theme(axis.title.x=element_blank()) + 
+  ggtitle("Control- filtered-low reads, mitochondria and chloroplast") +
+   scale_fill_aaas()
+facet_plot2
+##################### Running box plot #############################
+# shannon_plot <- shannon %>% #shannon_box, chao1_box
+#   ggplot(aes(x = Treatments, y = value, fill = Timepoints)) +
+#   geom_boxplot(outlier.shape = NA) +
+#   geom_jitter(color="black", size=1, alpha=0.5) +
+#   labs(y="Shannon", x="Treatments") +
+#   annotate("text", x = 2, y = 3.2, label = "Kruskal-Wallis, p = 0.0097", colour = "black") +
+#   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+#   theme_classic() + 
+#   theme(axis.title.x=element_blank()) + 
+#    scale_fill_aaas()
+# 
+# shannon_plot
+# chao_plot <- chao %>% #shannon_box, chao1_box
+#   ggplot(aes(x = Treatments, y = value, fill = Timepoints)) +
+#   geom_boxplot(outlier.shape = NA) +
+#   geom_jitter(color="black", size=1, alpha=0.5) +
+#   labs(y="Chao1", x="Treatments") +
+#   annotate("text", x = 2, y = 130, label = "Kruskal-Wallis, p = 0.0032", colour = "black") +
+#   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+#   theme_classic() + 
+#   theme(axis.title.x=element_blank()) + 
+#    scale_fill_aaas()
+#  chao_plot
+```
+
+
+##Arranging both diversity plots
+```{r}
+# alpha_div_plots = ggarrange(shannon_plot,chao_plot,nrow = 2, ncol = 1, align="hv",labels = c("A","B")) 
+# alpha_div_plots
+```
+
+Alpha diversity for ASM-treatments
+
+```{r fig.width=10, fig.height=40}
+# alpha_diversity <- estimate_richness(physeq, measures = c("Shannon", "Chao1"))
+# df_alpha <- data.frame(alpha_diversity, sample_data(physeq))
+# df <- reshape2::melt(df_alpha,
+#                      measure.var=c("Shannon","Chao1"),
+#                      id.vars=c("Timepoints", "Treatments"))
+# df3 <- df %>%
+#   #mutate(value = as.numeric(value)) %>% 
+#   #as.numeric(df$value)
+#   filter(Timepoints != "None") %>% 
+#   filter(Treatments != "Control") %>%
+#   filter(Treatments != "NA") %>%
+#   filter(Treatments == "ASM-treated") 
+# #selecting the rows corresponding to each index from the main dataframe
+# shannon = dplyr::filter(df3, variable == "Shannon")
+# chao = dplyr::filter(df3, variable == "Chao1")
+```
+
+##Alpha diversity plot for ASM-treated
+```{r}
+library(ggsci)
+##################### Running box plot #############################
+# shannon_plot <- shannon %>% #shannon_box, chao1_box
+#   ggplot(aes(x = Treatments, y = value, fill = Timepoints)) +
+#   geom_boxplot(outlier.shape = NA) +
+#   geom_jitter(color="black", size=1, alpha=0.5) +
+#   labs(y="Shannon", x="Treatments") +
+#   annotate("text", x = 2, y = 3.2, label = "Kruskal-Wallis, p = 0.0097", colour = "black") +
+#   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+#   theme_classic() + 
+#   theme(legend.position = "none",axis.title.x=element_blank()) + 
+#    scale_fill_aaas()
+# shannon_plot
+# chao_plot <- chao %>% #shannon_box, chao1_box
+#   ggplot(aes(x = Treatments, y = value, fill = Timepoints)) +
+#   geom_boxplot(outlier.shape = NA) +
+#   geom_jitter(color="black", size=1, alpha=0.5) +
+#   labs(y="Chao1", x="Treatments") +
+#   annotate("text", x = 2, y = 130, label = "Kruskal-Wallis, p = 0.0032", colour = "black") +
+#   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+#   theme_classic() + 
+#   theme(legend.position = "none",axis.title.x=element_blank()) + 
+#    scale_fill_aaas()
+#  chao_plot
+```
+
+##Arranging both diversity plots
+```{r}
+# alpha_div_plots = ggarrange(shannon_plot,chao_plot,nrow = 2, ncol = 1, align="hv",labels = c("A","B")) 
+# alpha_div_plots
+```
+
+
+
+# Phylum bar plots
+
+### Control : No chloroplast and low reads filtered
+
+Format phyloseq object, remove chloroplasts, calculate mean abundace per group
+
+```{r}
+phylum <- physeq_filtered2 %>%
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Family != " Chloroplast")%>%
+  subset_samples(Timepoints != "ASM-treated") %>%
+  subset_samples(Timepoints != "None") %>%
+  subset_samples(Treatments == "Control") %>%
+  tax_glom("Phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+#make it after making the bar plot. Other because it is very less.
+  #mutate(Phylum = recode(Phylum,
+                        # "Armatimonadetes" = "Other",
+                         #"candidate_division_WPS-1" = "Other",
+                         #"Chlamydiae" = "Other", 
+                         #"Deinococcus-Thermus" = "Other",
+                         #"Fusobacteria" = "Other", 
+                         #"Nitrospirae" = "Other", 
+                         #"Parcubacteria" = "Other",
+                         #"Synergistetes" = "Other" )) %>% 
+
+  group_by(OTU, Tissue_types, Timepoints, Treatments, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+
+
+Make the plot 
+
+```{r}
+plot_phylum <- phylum %>%
+  ggplot(aes(x = Timepoints, y = Mean_abund, fill = Phylum, 
+             Tissue_types)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(~Tissue_types) +
+  # Clean up labels
+  ylab("Relative Abundance") +
+  ggtitle("Control filtered-low reads, mitochondria and chloroplast") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) #reduce legend size
+  # customize plot colors
+  # scale_fill_manual(name = "Phylum", #legend name
+  #                   #breaks = phy_names13, #call legend labels
+  #                   labels = phy_labels13, #cleaned up labels
+  #                   values = phy_colors13, #custom colors 
+  #                   guide = guide_legend(ncol = 1)) #force one column 
+plot_phylum
+```
+### Control : No chloroplast and low reads filtered
+
+Format phyloseq object, remove chloroplasts, calculate mean abundace per group
+
+```{r}
+phylum2 <- physeq_filtered2 %>%
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Family != " Chloroplast")%>%
+  subset_samples(Timepoints != "None") %>%
+  subset_samples(Treatments != "Control") %>%
+  subset_samples(Treatments == "ASM-treated") %>%
+  tax_glom("Phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+#make it after making the bar plot. Other because it is very less.
+  #mutate(Phylum = recode(Phylum,
+                        # "Armatimonadetes" = "Other",
+                         #"candidate_division_WPS-1" = "Other",
+                         #"Chlamydiae" = "Other", 
+                         #"Deinococcus-Thermus" = "Other",
+                         #"Fusobacteria" = "Other", 
+                         #"Nitrospirae" = "Other", 
+                         #"Parcubacteria" = "Other",
+                         #"Synergistetes" = "Other" )) %>% 
+
+  group_by(OTU, Tissue_types, Timepoints, Treatments, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+
+
+Make the plot 
+
+```{r}
+plot_phylum <- phylum2 %>%
+  ggplot(aes(x = Timepoints, y = Mean_abund, fill = Phylum, 
+             Tissue_types)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(~Tissue_types) +
+  # Clean up labels
+  ylab("Relative Abundance") +
+  ggtitle("ASM-treated filtered-low reads, mitochondria and chloroplast") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) #reduce legend size
+  # customize plot colors
+  # scale_fill_manual(name = "Phylum", #legend name
+  #                   #breaks = phy_names13, #call legend labels
+  #                   labels = phy_labels13, #cleaned up labels
+  #                   values = phy_colors13, #custom colors 
+  #                   guide = guide_legend(ncol = 1)) #force one column 
+plot_phylum
+```
+
+
+# Phylum bar plots
+
+### Control : Without proteobacteria- No chloroplast and low reads filtered
+
+Format phyloseq object, remove chloroplasts, calculate mean abundace per group
+
+```{r}
+phylum <- physeq_filtered2 %>%
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Family != " Chloroplast")%>%
+  subset_taxa(Phylum != " Proteobacteria")%>%
+  subset_samples(Timepoints != "ASM-treated") %>%
+  subset_samples(Timepoints != "None") %>%
+  subset_samples(Treatments == "Control") %>%
+  tax_glom("Phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+#make it after making the bar plot. Other because it is very less.
+  #mutate(Phylum = recode(Phylum,
+                        # "Armatimonadetes" = "Other",
+                         #"candidate_division_WPS-1" = "Other",
+                         #"Chlamydiae" = "Other", 
+                         #"Deinococcus-Thermus" = "Other",
+                         #"Fusobacteria" = "Other", 
+                         #"Nitrospirae" = "Other", 
+                         #"Parcubacteria" = "Other",
+                         #"Synergistetes" = "Other" )) %>% 
+
+  group_by(OTU, Tissue_types, Timepoints, Treatments, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+
+
+Make the plot 
+
+```{r}
+plot_phylum <- phylum %>%
+  ggplot(aes(x = Timepoints, y = Mean_abund, fill = Phylum, 
+             Tissue_types)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(~Tissue_types) +
+  # Clean up labels
+  ylab("Relative Abundance") +
+  ggtitle("Control filtered-low reads, proteobacteria, mitochondria and chloroplast") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) #reduce legend size
+  # customize plot colors
+  # scale_fill_manual(name = "Phylum", #legend name
+  #                   #breaks = phy_names13, #call legend labels
+  #                   labels = phy_labels13, #cleaned up labels
+  #                   values = phy_colors13, #custom colors 
+  #                   guide = guide_legend(ncol = 1)) #force one column 
+plot_phylum
+```
+
+
+# Phylum bar plots
+
+### Control : Without proteobacteria- No chloroplast and low reads filtered
+
+Format phyloseq object, remove chloroplasts, calculate mean abundace per group
+
+```{r}
+phylum <- physeq_filtered2 %>%
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Family != " Chloroplast")%>%
+  subset_taxa(Phylum != " Proteobacteria")%>%
+  subset_samples(Timepoints != "None") %>%
+  subset_samples(Treatments != "Control") %>%
+  subset_samples(Treatments == "ASM-treated") %>%
+  tax_glom("Phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+#make it after making the bar plot. Other because it is very less.
+  #mutate(Phylum = recode(Phylum,
+                        # "Armatimonadetes" = "Other",
+                         #"candidate_division_WPS-1" = "Other",
+                         #"Chlamydiae" = "Other", 
+                         #"Deinococcus-Thermus" = "Other",
+                         #"Fusobacteria" = "Other", 
+                         #"Nitrospirae" = "Other", 
+                         #"Parcubacteria" = "Other",
+                         #"Synergistetes" = "Other" )) %>% 
+
+  group_by(OTU, Tissue_types, Timepoints, Treatments, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+
+
+Make the plot 
+
+```{r}
+plot_phylum <- phylum %>%
+  ggplot(aes(x = Timepoints, y = Mean_abund, fill = Phylum, 
+             Tissue_types)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(~Tissue_types) +
+  # Clean up labels
+  ylab("Relative Abundance") +
+  ggtitle("ASM-treated filtered-low reads, proteobacteria, mitochondria and chloroplast") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) #reduce legend size
+  # customize plot colors
+  # scale_fill_manual(name = "Phylum", #legend name
+  #                   #breaks = phy_names13, #call legend labels
+  #                   labels = phy_labels13, #cleaned up labels
+  #                   values = phy_colors13, #custom colors 
+  #                   guide = guide_legend(ncol = 1)) #force one column 
+plot_phylum
+```
+
+
+# Phylum bar plots
+
+### Compare control Vs treated in Pulp: No chloroplast and low reads filtered
+
+Format phyloseq object, remove chloroplasts, calculate mean abundace per group
+
+```{r}
+phylum <- physeq_filtered2 %>%
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Family != " Chloroplast")%>%
+  subset_samples(Timepoints != "None") %>%
+  subset_samples(Timepoints != "Day 14") %>%
+  subset_samples(Tissue_types != "Skin") %>%
+  tax_glom("Phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+#make it after making the bar plot. Other because it is very less.
+  #mutate(Phylum = recode(Phylum,
+                        # "Armatimonadetes" = "Other",
+                         #"candidate_division_WPS-1" = "Other",
+                         #"Chlamydiae" = "Other", 
+                         #"Deinococcus-Thermus" = "Other",
+                         #"Fusobacteria" = "Other", 
+                         #"Nitrospirae" = "Other", 
+                         #"Parcubacteria" = "Other",
+                         #"Synergistetes" = "Other" )) %>% 
+
+  group_by(OTU, Tissue_types, Timepoints, Treatments, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+
+
+Make the plot 
+
+```{r}
+plot_phylum <- phylum %>%
+  ggplot(aes(x = Timepoints, y = Mean_abund, fill = Phylum, Treatments)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(~Treatments, scales = "free") +
+  # Clean up labels
+  ylab("Relative Abundance") +
+  ggtitle("Pulp- filtered low reads, mitochondria and chloroplast") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) #reduce legend size
+  # customize plot colors
+  # scale_fill_manual(name = "Phylum", #legend name
+  #                   #breaks = phy_names13, #call legend labels
+  #                   labels = phy_labels13, #cleaned up labels
+  #                   values = phy_colors13, #custom colors 
+  #                   guide = guide_legend(ncol = 1)) #force one column 
+plot_phylum
+```
+
+# Phylum bar plots
+
+### Compare control Vs treated in Skin: No chloroplast and low reads filtered
+
+Format phyloseq object, remove chloroplasts, calculate mean abundace per group
+
+```{r}
+phylum <- physeq_filtered2 %>%
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Family != " Chloroplast")%>%
+  subset_samples(Timepoints != "None") %>%
+  subset_samples(Tissue_types != "Pulp") %>%
+  tax_glom("Phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+#make it after making the bar plot. Other because it is very less.
+  #mutate(Phylum = recode(Phylum,
+                        # "Armatimonadetes" = "Other",
+                         #"candidate_division_WPS-1" = "Other",
+                         #"Chlamydiae" = "Other", 
+                         #"Deinococcus-Thermus" = "Other",
+                         #"Fusobacteria" = "Other", 
+                         #"Nitrospirae" = "Other", 
+                         #"Parcubacteria" = "Other",
+                         #"Synergistetes" = "Other" )) %>% 
+
+  group_by(OTU, Tissue_types, Timepoints, Treatments, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+
+
+Make the plot 
+
+```{r}
+plot_phylum <- phylum %>%
+  ggplot(aes(x = Timepoints, y = Mean_abund, fill = Phylum, Treatments)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(~Treatments, scales = "free") +
+  # Clean up labels
+  ylab("Relative Abundance") +
+  ggtitle("Skin- filtered low reads, mitochondria and chloroplast") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) #reduce legend size
+  # customize plot colors
+  # scale_fill_manual(name = "Phylum", #legend name
+  #                   #breaks = phy_names13, #call legend labels
+  #                   labels = phy_labels13, #cleaned up labels
+  #                   values = phy_colors13, #custom colors 
+  #                   guide = guide_legend(ncol = 1)) #force one column 
+plot_phylum
+```
+
+#Beta diversity_analysis between timepoints and treatments in pulp
+
+```{r}
+# create a subset of the phyloseq object
+physq_sub <- physeq_filtered2 %>% 
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Order != " Chloroplast")%>%
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Tissue_types != "Skin") %>%
+  subset_samples(Timepoints != "Day 14")
+physq_sub #1469 taxa and 52 samples
+
+# Summary statistics on read counts 
+min(sample_sums(physq_sub)) #1544
+mean(sample_sums(physq_sub)) #11898.21
+max(sample_sums(physq_sub))  #31387
+
+# get read counts 
+sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+ggplot(sample_sum_df, aes(x = sum)) + 
+ geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+ ggtitle("Distribution of sample sequencing depth") + 
+  xlab("Read counts") +
+  theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+min(sample_sums(physq_scale)) #406
+mean(sample_sums(physq_scale)) #412
+max(sample_sums(physq_scale))  #416
+```
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=3, maxit=100, try=100,
+                     distance = "bray") #stress= 0.1563349 
+physq_bc
+```
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            shape = "Treatments",
+                            color = "Timepoints") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Timepoints",
+                     breaks = c("Day 0", "Day 7", 
+                                "Day 25", "Day 49"), 
+                     values = c("#ED1E24", "#9ACA3C", "#40B9EB",
+                                "#426FB6", "#D771AD")) +
+  scale_shape_manual(aes(size = 6),
+                     name = "Treatments",
+                     breaks = c("Control", "ASM-treated"),
+                     values = c(16, 17)) +  
+  ggtitle("Pulp: Control Vs. ASM-treated")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+### Adonis test 
+adonb <- adonis(dat_bray~Timepoints*Treatments, data=sampledf)
+adonb #p= 0.001 (time); 0.080 (tissue); 0.001 (both)
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Treatments)
+permutest(beta) #NS
+
+### ANOSIM
+Tmpt <- get_variable(physq_scale, "Timepoints")
+time_ano <- anosim(dat_bray, Tmpt)
+time_ano$signif #p=0.001
+time_ano$statistic #R=0.2919358
+
+Trtmt <- get_variable(physq_scale, "Treatments")
+trm_ano <- anosim(dat_bray, Trtmt)
+trm_ano$signif #p=0.077
+trm_ano$statistic #R=0.026632
+```
+
+
+#beta diversity: between timepoints and treatments in skin
+
+
+```{r}
+# create a subset of the phyloseq object
+physq_sub <- physeq_filtered2 %>% 
+  
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Tissue_types != "Pulp") %>%
+subset_samples(Timepoints != "Day 14")
+physq_sub #1342 taxa and 40 samples
+
+# Summary statistics on read counts 
+min(sample_sums(physq_sub)) #504
+mean(sample_sums(physq_sub)) #1124
+max(sample_sums(physq_sub))  #5478
+
+# get read counts 
+# sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+# ggplot(sample_sum_df, aes(x = sum)) + 
+#   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+#   ggtitle("Distribution of sample sequencing depth") + 
+#   xlab("Read counts") +
+#   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+# min(sample_sums(physq_scale)) #499
+# mean(sample_sums(physq_scale)) #504
+# max(sample_sums(physq_scale))  #509
+```
+
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=3, maxit=100, try=100,
+                     distance = "bray") #stress= 0.1043982 
+physq_bc
+```
+
+
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            shape = "Treatments",
+                            color = "Timepoints") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Timepoints",
+                     breaks = c("Day 0", "Day 7", 
+                                "Day 25", "Day 49"), 
+                     values = c("#ED1E24", "#9ACA3C", "#40B9EB",
+                                "#426FB6", "#D771AD")) +
+  scale_shape_manual(aes(size = 6),
+                     name = "Treatments",
+                     breaks = c("Control", "ASM-treated"),
+                     values = c(16, 17)) +  
+  ggtitle("Skin: Control Vs. ASM-treated")
+ordplotG
+```
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+### Adonis test 
+adonb <- adonis(dat_bray~Timepoints*Treatments, data=sampledf)
+adonb #p= 0.001 (time); 0.014 (tissue); 0.001 (both)
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Treatments)
+permutest(beta) #NS
+
+### ANOSIM
+Tmpt <- get_variable(physq_scale, "Timepoints")
+time_ano <- anosim(dat_bray, Tmpt)
+time_ano$signif #p=0.001
+time_ano$statistic #R=0.4871639
+Trtmt <- get_variable(physq_scale, "Treatments")
+trm_ano <- anosim(dat_bray, Trtmt)
+trm_ano$signif #p=0.058
+trm_ano$statistic #R=0.05960
+```
+
+#Beta diversity_analysis- For control between tissues and time
+
+```{r}
+# create a subset of the phyloseq object
+physq_sub <- physeq_filtered2 %>% 
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Treatments != "ASM-treated")  %>%
+  subset_samples(Treatments == "Control")
+ 
+physq_sub #1469 taxa and 61 samples
+
+# check samples after filter
+sample_names(physq_sub)
+
+# Summary statistics on read counts 
+ min(sample_sums(physq_sub)) #1823
+mean(sample_sums(physq_sub)) #12684.8
+max(sample_sums(physq_sub))  #26494
+
+# get read counts 
+# sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+# ggplot(sample_sum_df, aes(x = sum)) + 
+#   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+#   ggtitle("Distribution of sample sequencing depth") + 
+#   xlab("Read counts") +
+#   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+min(sample_sums(physq_scale)) #1814
+mean(sample_sums(physq_scale)) #1822.852
+max(sample_sums(physq_scale))  #1831
+```
+
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress= 0.162732 
+physq_bc
+```
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            shape = "Tissue_types",
+                            color = "Timepoints") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Timepoints",
+                     breaks = c("Day 0", "Day 7", "Day 14",
+                                "Day 25", "Day 49"), 
+                     values = c("#ED1E24", "#9ACA3C", "#40B9EB",
+                                "#426FB6", "#D771AD")) +
+  scale_shape_manual(aes(size = 6),
+                     name = "Tissue_types",
+                     breaks = c("Skin", "Pulp"),
+                     values = c(16, 17)) +  
+  ggtitle("Skin Vs. Pulp")
+ordplotG
+```
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+
+### Adonis test 
+adonb <- adonis(dat_bray~Timepoints*Tissue_types, data=sampledf)
+adonb #P value : 0.001 (time) 0.001 (tissue) 0.145 (both)
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+beta
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Tissue_types)
+permutest(beta) #NS
+
+### ANOSIM
+Tmpt <- get_variable(physq_sub, "Timepoints")
+time_ano <- anosim(dat_bray, Tmpt)
+time_ano$signif 
+time_ano$statistic #P: 001 R= 0.2092851
+Tiss <- get_variable(physq_sub, "Tissue_types")
+tis_ano <- anosim(dat_bray, Tiss)
+tis_ano$signif 
+tis_ano$statistic #p = 0.001, R=0.3319004
+```
+
+#Beta diversity_analysis- For ASM-treated between tissues and time
+
+```{r}
+# create a subset of the phyloseq object
+physq_sub <- physeq_filtered2 %>% 
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Treatments != "Control") %>%
+  subset_samples(Treatments == "ASM-treated") 
+physq_sub #1488 taxa and 47 samples
+
+# check samples after filter
+sample_names(physq_sub)
+
+# Summary statistics on read counts 
+min(sample_sums(physq_sub)) #1107
+mean(sample_sums(physq_sub)) #9234.681
+max(sample_sums(physq_sub))  #31387
+
+# get read counts 
+sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+ggplot(sample_sum_df, aes(x = sum)) + 
+  geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+  ggtitle("Distribution of sample sequencing depth") + 
+  xlab("Read counts") +
+  theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+  physq_scale <- physq_sub %>%
+  scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+min(sample_sums(physq_scale)) #1101
+mean(sample_sums(physq_scale)) #1105.851
+max(sample_sums(physq_scale))  #1113
+
+
+```
+
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress= 0.1597324 
+physq_bc
+```
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            shape = "Tissue_types",
+                            color = "Timepoints") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Timepoints",
+                     breaks = c("Day 0", "Day 7",
+                                "Day 25", "Day 49"), 
+                     values = c("#ED1E24", "#9ACA3C", 
+                                "#426FB6", "#D771AD")) +
+  scale_shape_manual(aes(size = 6),
+                     name = "Tissue_types",
+                     breaks = c("Skin", "Pulp"),
+                     values = c(16, 17)) +  
+  ggtitle("Skin Vs. Pulp")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+
+### Adonis test 
+adonb <- adonis(dat_bray~Timepoints*Tissue_types, data=sampledf)
+adonb #P value : 0.001 (time) 0.001 (tissue) 0.002 (both)
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+beta
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Tissue_types)
+permutest(beta) #NS
+
+### ANOSIM
+Tmpt <- get_variable(physq_sub, "Timepoints")
+time_ano <- anosim(dat_bray, Tmpt)
+time_ano$signif 
+time_ano$statistic #P: 001 R= 0.3862
+Tiss <- get_variable(physq_sub, "Tissue_types")
+tis_ano <- anosim(dat_bray, Tiss)
+tis_ano$signif 
+tis_ano$statistic #p = 0.001, R=0.4980106
+```
+
+
+
+
+
+#Beta Diversity by treatments
+
+##Weighted Unifrac stats 
+Analyzed by Timepoints
+```{r}
+## PERMANOVA
+library(vegan)
+physeq_filtered3 <- physeq_filtered2 %>%
+  subset_samples(Treatments != "None") 
+
+wuinfrac_dist <- phyloseq::distance(physeq_filtered3, method="wunifrac") #RUN this only once because it takes a lot of time
+
+adonis_wunifrac = adonis2(wuinfrac_dist ~ sample_data(physeq_filtered3)$Treatments)
+adonis_wunifrac
+
+
+## Significant PERMANOVA indicates that centroid (or spatial median) among groups is different and/or with-group dispersion among groups is different
+## PERMDISP
+
+# subset phyloseq object as for sample data
+wuni_disp <-betadisper(wuinfrac_dist, sample_data(physeq_filtered3)$Treatments, type=c("median"))
+anova(wuni_disp)
+ 
+## If PERMANOVA and PERMDISP are both significant, you can use plotting to tell if PERMANOVA was significant based on centroid (or spatial median)
+plot(wuni_disp)
+
+#?plot.betadisper
+## Would look better with higher replication for groups
+plot(wuni_disp, label = F)
+
+## Plot with 1 standard deviation ellipses around the group medians
+## sample size issue here, but you get the idea
+plot(wuni_disp, label = F, hull = F, ellipse = T)
+
+## Within-group dispersion that PERMDISP is testing
+boxplot(wuni_disp, las = 2, cex.lab=1.5)
+?boxplot
+
+## pairwise p-values
+TukeyHSD(wuni_disp)
+scores(wuni_disp, 1:4, display = "centroids")
+rda(otu_table)
+```
+
+
+
+##Weighted unifrac beta diversity plot with phyloseq
+Used to check the PCoA %
+```{r}
+beta_wu <- ordinate(physeq_filtered3, "PCoA", "wunifrac")
+beta_wu_plot = plot_ordination(physeq_filtered3, beta_wu, type="Treatments", color="Treatments", shape="Treatments", title="PCoA Weighted Unifrac") + stat_ellipse(type = "t", linetype = 3) + stat_ellipse(type = "t") + theme_bw()+labs(colour = "Treatments") #To add arrows https://neavemj.github.io/posts/coralMicrobiome
+beta_wu_plot
+```
+
+
+#Final weighted unifrac plot
+```{r}
+label_perm <- expression(paste("PERMANOVA, ",R^2 ,"= 0.16, ", paste(italic('p')),"=0.001"))
+beta_scatter = as.data.frame(beta_wu[["vectors"]])
+beta_meta = merge(beta_scatter,metadata,by = 0,all=F)
+pmain_wuF = ggscatter(beta_meta, x = "Axis.1", y = "Axis.2", color = "Treatments", palette = "aaas",ellipse = TRUE, ellipse.level=.5,mean.point = F, mean.point.size = 5, star.plot = F) +labs(x = "PCoA 1 (40.2%) ", y = "PCoA 2 (19.3%)", colour = "Treatments", fill = "Treatments") +annotate("text", x = -0.04, y = -0.06, label = label_perm, colour = "black")
+pmain_wuF
+```
+
+#Beta Diversity by time points
+
+##Weighted Unifrac stats 
+Analyzed by Timepoints
+```{r}
+## PERMANOVA
+library(vegan)
+wuinfrac_dist = phyloseq::distance(physeq_filtered.cs, method="wunifrac")
+#RUN this only once because it takes a lot of time
+
+adonis_wunifrac = adonis2(wuinfrac_dist ~ sample_data(physeq_filtered.cs)$Timepoints)
+adonis_wunifrac
+
+
+## Significant PERMANOVA indicates that centroid (or spatial median) among groups is different and/or with-group dispersion among groups is different
+## PERMDISP
+
+# subset phyloseq object as for sample data
+wuni_disp <-betadisper(wuinfrac_dist, sample_data(physeq_filtered.cs)$Timepoints, type=c("median"))
+anova(wuni_disp)
+ 
+## If PERMANOVA and PERMDISP are both significant, you can use plotting to tell if PERMANOVA was significant based on centroid (or spatial median)
+plot(wuni_disp)
+
+#?plot.betadisper
+## Would look better with higher replication for groups
+plot(wuni_disp, label = F)
+
+## Plot with 1 standard deviation ellipses around the group medians
+## sample size issue here, but you get the idea
+plot(wuni_disp, label = F, hull = F, ellipse = T)
+
+## Within-group dispersion that PERMDISP is testing
+boxplot(wuni_disp, las = 2, cex.lab=1.5)
+?boxplot
+
+## pairwise p-values
+TukeyHSD(wuni_disp)
+scores(wuni_disp, 1:4, display = "centroids")
+rda(otu_table)
+```
+
+
+##Weighted unifrac beta diversity plot with phyloseq
+Used to check the PCoA %
+```{r}
+beta_wu <- ordinate(physeq_filtered2, "PCoA", "wunifrac")
+beta_wu_plot = plot_ordination(physeq_filtered2, beta_wu, type="Timepoints", color="Timepoints", shape="Timepoints", title="PCoA Weighted Unifrac") + stat_ellipse(type = "t", linetype = 3) + stat_ellipse(type = "t") + theme_bw()+labs(colour = "Timepoints") #To add arrows https://neavemj.github.io/posts/coralMicrobiome
+beta_wu_plot
+```
+
+#Final weighted unifrac plot
+```{r}
+label_perm <- expression(paste("PERMANOVA, ",R^2 ,"= 0.16, ", paste(italic('p')),"=0.001"))
+beta_scatter = as.data.frame(beta_wu[["vectors"]])
+beta_meta = merge(beta_scatter,metadata,by = 0,all=F)
+pmain_wuF = ggscatter(beta_meta, x = "Axis.1", y = "Axis.2", color = "Timepoints", palette = "aaas",ellipse = TRUE, ellipse.level=.5,mean.point = F, mean.point.size = 5, star.plot = F) +labs(x = "PCoA 1 (40.2%) ", y = "PCoA 2 (19.3%)", colour = "Timepoints", fill = "Timepoints") +annotate("text", x = -0.04, y = -0.06, label = label_perm, colour = "black")
+pmain_wuF
+```
+
+
+
+
+#Beta Diversity by tissue_types
+
+##Weighted Unifrac stats 
+Analyzed by Timepoints
+```{r}
+## PERMANOVA
+library(vegan)
+
+physeq_filtered3 <- physeq_filtered2 %>%
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Treatments != "Control") 
+
+wuinfrac_dist = phyloseq::distance(physeq_filtered3, method="wunifrac") #RUN this only once because it takes a lot of time
+
+adonis_wunifrac = adonis2(wuinfrac_dist ~ sample_data(physeq_filtered3)$Tissue_types)
+adonis_wunifrac
+
+
+## Significant PERMANOVA indicates that centroid (or spatial median) among groups is different and/or with-group dispersion among groups is different
+## PERMDISP
+
+# subset phyloseq object as for sample data
+wuni_disp <-betadisper(wuinfrac_dist, sample_data(physeq_filtered3)$Tissue_types, type=c("median"))
+anova(wuni_disp)
+ 
+## If PERMANOVA and PERMDISP are both significant, you can use plotting to tell if PERMANOVA was significant based on centroid (or spatial median)
+plot(wuni_disp)
+
+#?plot.betadisper
+## Would look better with higher replication for groups
+plot(wuni_disp, label = F)
+
+## Plot with 1 standard deviation ellipses around the group medians
+## sample size issue here, but you get the idea
+plot(wuni_disp, label = F, hull = F, ellipse = T)
+
+## Within-group dispersion that PERMDISP is testing
+boxplot(wuni_disp, las = 2, cex.lab=1.5)
+?boxplot
+
+## pairwise p-values
+TukeyHSD(wuni_disp)
+scores(wuni_disp, 1:4, display = "centroids")
+rda(otu_table)
+```
+
+##Weighted unifrac beta diversity plot with phyloseq
+Used to check the PCoA %
+```{r}
+beta_wu <- ordinate(physeq_filtered3, "PCoA", "wunifrac")
+beta_wu_plot = plot_ordination(physeq_filtered2, beta_wu, type="Tissue_types", color="Tissue_types", shape="Tissue_types", title="PCoA Weighted Unifrac") + stat_ellipse(type = "t", linetype = 3) + stat_ellipse(type = "t") + theme_bw()+labs(colour = "Tissue_types") #To add arrows https://neavemj.github.io/posts/coralMicrobiome
+beta_wu_plot
+```
+
+#Final weighted unifrac plot
+```{r}
+label_perm <- expression(paste("PERMANOVA, ",R^2 ,"= 0.16, ", paste(italic('p')),"=0.001"))
+beta_scatter = as.data.frame(beta_wu[["vectors"]])
+beta_meta = merge(beta_scatter,metadata,by = 0,all=F)
+pmain_wuF = ggscatter(beta_meta, x = "Axis.1", y = "Axis.2", 
+                      color = "Tissue_types", palette = "aaas",
+                      ellipse = TRUE, ellipse.level=.5,
+                      mean.point = F, mean.point.size = 5, 
+                      star.plot = F) +
+  labs(x = "PCoA 1 (40.2%) ", y = "PCoA 2 (19.3%)", 
+       colour = "Tissue_types", fill = "Tissue_types") +
+  annotate("text", x = -0.04, y = -0.06, label = label_perm, colour = "black")
+pmain_wuF
+```
+
+
+##Bray-Curtis dissimilarity statistics
+```{r}
+## PERMANOVA
+library(vegan)
+bray_dist = phyloseq::distance(physeq_filtered2, method="bray") #RUN this only once because it takes a lot of time
+adonis_bray = adonis2(bray_dist ~ sample_data(physeq_filtered2)$Timepoints)
+adonis_bray
+## Significant PERMANOVA indicates that centroid (or spatial median) among groups is different and/or with-group dispersion among groups is different
+## PERMDISP
+bray_disp <-betadisper(wuinfrac_dist, sample_data(physeq_filtered2)$Timepoints, type=c("median"))
+anova(bray_disp)
+## If PERMANOVA and PERMDISP are both significant, you can use plotting to tell if PERMANOVA was significant based on centroid (or spatial median)
+plot(bray_disp)
+#?plot.betadisper
+## Would look better with higher replication for groups
+plot(bray_disp, label = F)
+## Plot with 1 standard deviation ellipses around the group medians
+## sample size issue here, but you get the idea
+plot(bray_disp, label = F, hull = F, ellipse = T)
+## Within-group dispersion that PERMDISP is testing
+boxplot(bray_disp, las = 2, cex.lab=1.5)
+?boxplot
+## pairwise p-values
+TukeyHSD(bray_disp)
+scores(bray_disp, 1:4, display = "centroids")
+```
+
+
+##Bray beta diversity plot
+```{r}
+beta_bray <- ordinate(physeq_filtered2, "PCoA", "bray") #RUN this only ONCE because it takes a lot of time
+beta_bray_plot = plot_ordination(physeq_filtered2, beta_bray, type="Timepoints", color="Timepoints", shape="Timepoints", title="PCoA Weighted Unifrac") + stat_ellipse(type = "t", linetype = 3) + stat_ellipse(type = "t") + theme_bw()+labs(colour = "Timepoints") #To add arrows https://neavemj.github.io/posts/coralMicrobiome
+beta_bray_plot
+```
+
+##Bray-Curtis final plot
+```{r}
+label_perm <- expression(paste("PERMANOVA, ",R^2 ,"= 0.12, ", paste(italic('p')),"=0.001"))
+#library(lemon)
+beta_scatter = as.data.frame(beta_bray[["vectors"]])
+beta_meta = merge(beta_scatter,metadata,by = 0,all=F)
+pmain_brayF = ggscatter(beta_meta, x = "Axis.1", y = "Axis.2", color = "Timepoints", palette = "aaas",ellipse = TRUE, ellipse.level=.5,mean.point = F, mean.point.size = 5, star.plot = F) +labs(x = "PCoA 1 (24.1%) ", y = "PCoA 2 (20.6%)", colour = "Timepoints", fill = "Timepoints")+ annotate("text", x = -0.12, y = -0.2, label = label_perm, colour = "black")
+pmain_brayF
+```
+
+##Bray-Curtis dissimilarity statistics
+```{r}
+## PERMANOVA
+library(vegan)
+bray_dist = phyloseq::distance(physeq_filtered2, method="bray") #RUN this only once because it takes a lot of time
+adonis_bray = adonis2(bray_dist ~ sample_data(physeq_filtered2)$Tissue_types)
+adonis_bray
+## Significant PERMANOVA indicates that centroid (or spatial median) among groups is different and/or with-group dispersion among groups is different
+## PERMDISP
+bray_disp <-betadisper(wuinfrac_dist, sample_data(physeq_filtered2)$Tissue_types, type=c("median"))
+anova(bray_disp)
+## If PERMANOVA and PERMDISP are both significant, you can use plotting to tell if PERMANOVA was significant based on centroid (or spatial median)
+plot(bray_disp)
+#?plot.betadisper
+## Would look better with higher replication for groups
+plot(bray_disp, label = F)
+## Plot with 1 standard deviation ellipses around the group medians
+## sample size issue here, but you get the idea
+plot(bray_disp, label = F, hull = F, ellipse = T)
+## Within-group dispersion that PERMDISP is testing
+boxplot(bray_disp, las = 2, cex.lab=1.5)
+?boxplot
+## pairwise p-values
+TukeyHSD(bray_disp)
+scores(bray_disp, 1:4, display = "centroids")
+```
+
+##Bray beta diversity plot
+```{r}
+beta_bray <- ordinate(physeq_filtered2, "PCoA", "bray") #RUN this only ONCE because it takes a lot of time
+beta_bray_plot = plot_ordination(physeq_filtered2, beta_bray, type="Tissue_types", color="Tissue_types", shape="Tissue_types", title="PCoA Weighted Unifrac") + stat_ellipse(type = "t", linetype = 3) + stat_ellipse(type = "t") + theme_bw()+labs(colour = "Tissue_types") #To add arrows https://neavemj.github.io/posts/coralMicrobiome
+beta_bray_plot
+```
+
+
+
+
+##Bray-Curtis final plot
+```{r}
+label_perm <- expression(paste("PERMANOVA, ",R^2 ,"= 0.12, ", paste(italic('p')),"=0.001"))
+#library(lemon)
+beta_scatter = as.data.frame(beta_bray[["vectors"]])
+beta_meta = merge(beta_scatter,metadata,by = 0,all=F)
+pmain_brayF = ggscatter(beta_meta, x = "Axis.1", y = "Axis.2", color = "Tissue_types", palette = "aaas",ellipse = TRUE, ellipse.level=.5,mean.point = F, mean.point.size = 5, star.plot = F) +labs(x = "PCoA 1 (24.1%) ", y = "PCoA 2 (20.6%)", colour = "Tissue_types", fill = "Tissue_types")+ annotate("text", x = -0.12, y = -0.2, label = label_perm, colour = "black")
+pmain_brayF
+```
+
+
+
+##Arranging both diversity plots into one
+```{r}
+beta_div_plots = ggarrange(pmain_brayF,pmain_wuF,nrow = 2, ncol = 1, align="hv", common.legend = TRUE, labels = c("C","D")) 
+beta_div_plots
+```
+
+
+
+
+#Family for control- filtered
+
+```{r}
+Family <- physeq_filtered2 %>%
+  subset_samples(Timepoints != "ASM-treated") %>%
+  subset_samples(Timepoints != "None") %>%
+  subset_samples(Treatments == "Control") %>%
+  tax_glom("Family") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+#make it after making the bar plot. Other because it is very less.
+  #mutate(Phylum = recode(Phylum,
+                        # "Armatimonadetes" = "Other",
+                         #"candidate_division_WPS-1" = "Other",
+                         #"Chlamydiae" = "Other", 
+                         #"Deinococcus-Thermus" = "Other",
+                         #"Fusobacteria" = "Other", 
+                         #"Nitrospirae" = "Other", 
+                         #"Parcubacteria" = "Other",
+                         #"Synergistetes" = "Other" )) %>% 
+
+  group_by(OTU, Tissue_types, Timepoints, Treatments, Family) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+
+Make the plot 
+
+```{r}
+plot_Family <- Family %>%
+  ggplot(aes(x = Timepoints, y = Mean_abund, fill = Family, 
+             Tissue_types)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(~Tissue_types) +
+  # Clean up labels
+  ylab("Relative Abundance") +
+  ggtitle("Control- filtered") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) #reduce legend size
+  # customize plot colors
+  # scale_fill_manual(name = "Phylum", #legend name
+  #                   #breaks = phy_names13, #call legend labels
+  #                   labels = phy_labels13, #cleaned up labels
+  #                   values = phy_colors13, #custom colors 
+  #                   guide = guide_legend(ncol = 1)) #force one column 
+plot_Family
+```
+#Family for ASM-treated- filtered
+
+```{r}
+Family <- physeq_filtered2 %>%
+  subset_samples(Timepoints != "Control") %>%
+  subset_samples(Timepoints != "None") %>%
+  subset_samples(Treatments == "ASM-treated") %>%
+  tax_glom("Family") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+#make it after making the bar plot. Other because it is very less.
+  #mutate(Phylum = recode(Phylum,
+                        # "Armatimonadetes" = "Other",
+                         #"candidate_division_WPS-1" = "Other",
+                         #"Chlamydiae" = "Other", 
+                         #"Deinococcus-Thermus" = "Other",
+                         #"Fusobacteria" = "Other", 
+                         #"Nitrospirae" = "Other", 
+                         #"Parcubacteria" = "Other",
+                         #"Synergistetes" = "Other" )) %>% 
+
+  group_by(OTU, Tissue_types, Timepoints, Treatments, Family) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+
+Make the plot 
+
+```{r}
+plot_Family <- Family %>%
+  ggplot(aes(x = Timepoints, y = Mean_abund, fill = Family, 
+             Tissue_types)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(~Tissue_types) +
+  # Clean up labels
+  ylab("Relative Abundance") +
+  ggtitle("ASM-treated - filtered") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) #reduce legend size
+  # customize plot colors
+  # scale_fill_manual(name = "Phylum", #legend name
+  #                   #breaks = phy_names13, #call legend labels
+  #                   labels = phy_labels13, #cleaned up labels
+  #                   values = phy_colors13, #custom colors 
+  #                   guide = guide_legend(ncol = 1)) #force one column 
+plot_Family
+```
+
+
+### Ask Kristi
+
+#Beta Diversity
+
+##Weighted Unifrac stats 
+
+```{r}
+`%notin%` <- Negate(`%in%`)
+#Filtering samples
+physeq_filtered3 = subset_taxa(physeq_filtered2, Treatments %notin% "None", Timepoints %notin% "None")
+physeq_filtered2 = physeq_filtered3
+```
+
+
+##Analyzed by Timepoints
+```{r}
+## PERMANOVA
+library(vegan)
+# calculate the distance matrix
+#RUN this only once because it takes a lot of time
+wunifrac_dist <- phyloseq::distance(subset_samples(physeq, Treatments == "Control"),
+                                    method="bray") 
+# make a dataframe of the sample data 
+test_sample_Df <- data.frame(sample_data(subset_samples(physeq,
+                                                        Treatments == "Control")))
+# do the test 
+adonis_wunifrac <- adonis2(wunifrac_dist ~ Timepoints, 
+                          data = test_sample_Df)
+adonis_wunifrac
+
+## Significant PERMANOVA indicates that centroid (or spatial median) among groups is different and/or with-group dispersion among groups is different
+## PERMDISP
+
+# subset phyloseq object as for sample data
+wuni_disp <-betadisper(wunifrac_dist, sample_data(physeq)$Timepoints, type=c("median"))
+anova(wuni_disp)
+
+## If PERMANOVA and PERMDISP are both significant, you can use plotting to tell if PERMANOVA was significant based on centroid (or spatial median)
+plot(wuni_disp)
+
+#?plot.betadisper
+## Would look better with higher replication for groups
+plot(wuni_disp, label = F)
+
+## Plot with 1 standard deviation ellipses around the group medians
+## sample size issue here, but you get the idea
+plot(wuni_disp, label = F, hull = F, ellipse = T)
+
+## Within-group dispersion that PERMDISP is testing
+boxplot(wuni_disp, las = 2, cex.lab=1.5)
+?boxplot
+
+## pairwise p-values
+TukeyHSD(wuni_disp)
+scores(wuni_disp, 1:4, display = "centroids")
+rda(otu_table)
+```
+
+##Weighted unifrac beta diversity plot with phyloseq
+Used to check the PCoA %
+```{r}
+beta_wu <- ordinate(physeq, "PCoA", "wunifrac")
+beta_wu_plot = plot_ordination(physeq, beta_wu, type="Timepoints", color="Timepoints", shape="Timepoints", title="PCoA Weighted Unifrac") + stat_ellipse(type = "t", linetype = 3) + stat_ellipse(type = "t") + theme_bw()+labs(colour = "Timepoints") #To add arrows https://neavemj.github.io/posts/coralMicrobiome
+beta_wu_plot
+```
+
+#Final weighted unifrac plot
+```{r}
+label_perm <- expression(paste("PERMANOVA, ",R^2 ,"= 0.16, ", paste(italic('p')),"=0.001"))
+beta_scatter = as.data.frame(beta_wu[["vectors"]])
+beta_meta = merge(beta_scatter,metadata,by = 0,all=F)
+pmain_wuF = ggscatter(beta_meta, x = "Axis.1", y = "Axis.2", color = "location", palette = "aaas",ellipse = TRUE, ellipse.level=.5,mean.point = F, mean.point.size = 5, star.plot = F) +labs(x = "PCoA 1 (40.2%) ", y = "PCoA 2 (19.3%)", colour = "location", fill = "location") +annotate("text", x = -0.04, y = -0.06, label = label_perm, colour = "black")
+pmain_wuF
+```
+
+##Bray-Curtis dissimilarity statistics
+```{r}
+## PERMANOVA
+library(vegan)
+bray_dist = phyloseq::distance(physeq, method="bray") #RUN this only once because it takes a lot of time
+adonis_bray = adonis2(bray_dist ~ sample_data(physeq)$Timepoints)
+adonis_bray
+## Significant PERMANOVA indicates that centroid (or spatial median) among groups is different and/or with-group dispersion among groups is different
+## PERMDISP
+bray_disp <-betadisper(wunifrac_dist, sample_data(physeq)$Timepoints, type=c("median"))
+anova(bray_disp)
+## If PERMANOVA and PERMDISP are both significant, you can use plotting to tell if PERMANOVA was significant based on centroid (or spatial median)
+plot(bray_disp)
+#?plot.betadisper
+## Would look better with higher replication for groups
+plot(bray_disp, label = F)
+## Plot with 1 standard deviation ellipses around the group medians
+## sample size issue here, but you get the idea
+plot(bray_disp, label = F, hull = F, ellipse = T)
+## Within-group dispersion that PERMDISP is testing
+boxplot(bray_disp, las = 2, cex.lab=1.5)
+?boxplot
+## pairwise p-values
+TukeyHSD(bray_disp)
+scores(bray_disp, 1:4, display = "centroids")
+```
+
+##Bray beta diversity plot
+```{r}
+beta_bray <- ordinate(physeq, "PCoA", "bray") #RUN this only ONCE because it takes a lot of time
+beta_bray_plot = plot_ordination(physeq, beta_bray, type="location", color="location", shape="location", title="PCoA Weighted Unifrac") + stat_ellipse(type = "t", linetype = 3) + stat_ellipse(type = "t") + theme_bw()+labs(colour = "location") #To add arrows https://neavemj.github.io/posts/coralMicrobiome
+beta_bray_plot
+```
+
+##Bray-Curtis final plot
+```{r}
+label_perm <- expression(paste("PERMANOVA, ",R^2 ,"= 0.12, ", paste(italic('p')),"=0.001"))
+#library(lemon)
+beta_scatter = as.data.frame(beta_bray[["vectors"]])
+beta_meta = merge(beta_scatter,metadata,by = 0,all=F)
+pmain_brayF = ggscatter(beta_meta, x = "Axis.1", y = "Axis.2", color = "location", palette = "aaas",ellipse = TRUE, ellipse.level=.5,mean.point = F, mean.point.size = 5, star.plot = F) +labs(x = "PCoA 1 (24.1%) ", y = "PCoA 2 (20.6%)", colour = "location", fill = "location")+ annotate("text", x = -0.12, y = -0.2, label = label_perm, colour = "black")
+pmain_brayF
+```
+
+##Arranging both diversity plots into one
+```{r}
+beta_div_plots = ggarrange(pmain_brayF,pmain_wuF,nrow = 2, ncol = 1, align="hv", common.legend = TRUE, labels = c("C","D")) 
+beta_div_plots
+```
+
+
+
+#Diversity plot
+Alpha and beta diversity plots arranged in one figure
+```{r fig.width=10, fig.height=7}
+diversity = ggarrange(alpha_div_plots, beta_div_plots, nrow = 1, ncol = 2, widths = c(1,1.5))
+diversity
+```
+
+#Saving diversity plot as png format
+```{r}
+ggsave(plot = diversity, "~/OneDrive - Michigan State University/Zhang_lab/Marine_Iguana/figures-plots/microbiome/16S_diversity_iguana.png", width = 10.5, height = 7)
+```
+
+
+#COMPOSITION
+##Phylum data frame
+Clustering the abundance by sample at the Phylum level and transforming to relative abundance
+```{r}
+glom_phylum <- physeq %>%
+ subset_samples(Timepoints != "None") %>% 
+ subset_samples(Treatments != "ASM-treated") %>%
+ subset_samples(Treatments != "None") %>%
+ subset_samples(Treatments == "Control") %>%
+tax_glom("glom_phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+group_by(OTU, Tissue_types, Timepoints, Treatments, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+  group_by(Sample) %>% 
+  mutate(relAbundBySample = Abundance / sum(Abundance)*100) #Converting counts to relative abundance %
+# subset phyloseq object as for sample data
+ 
+```
+
+###Phylum Barplot
+
+```{r}
+phylum_ab <- ggbarplot(Phylum, x= "Timepoints", y = "relAbundBySample", color = "Phylum", fill = "Phylum", ylab = "Relative Abundance", order = sample_names) +labs(colour = "Phylum", fill = "Phylum") + facet_wrap(~Tissuetypes, scales = "free_x") + theme(axis.text.x = element_text(angle = 90))
+
+phylum_ab
+```
+
+
+###Phylum proportions
+```{r}
+phylum_proportions <- data_phylum_rel %>% 
+  select(Phylum, relAbundBySample) %>% 
+  group_by(Phylum) %>% 
+  summarise(Proportion = mean(relAbundBySample)) 
+phylum_proportions
+```
+
+##Family data frame
+```{r}
+glom_family <- tax_glom(physeq, taxrank = 'Family')
+glom_family_rel = transform_sample_counts(glom_family, function(x) x/sum(x))
+top20 <- names(sort(taxa_sums(glom_family), decreasing=TRUE)[1:20])
+top20 #shows 20 results
+family_top20 = prune_taxa(top20, glom_family_rel)
+data_family <- psmelt(family_top20) # create dataframe from phyloseq object
+```
+
+###Family barplot
+```{r fig.width=20, fig.height=5}
+sample_names <- sort(unique(data_family$Sample))
+family_ab <- ggbarplot(data=data_family, x= "Sample", y = "Abundance", color = "Family", fill = "Family", palette = get_palette("rickandmorty",20), ylab = "Relative Abundance", order = sample_names) +labs(colour = "Family", fill = "Family", position = position_fill()) + facet_grid(~Timepoints, scales = "free_x", space = "free") + theme(axis.text.x = element_text(angle = 90))
+family_ab
+```
+
+###Family proportions
+```{r}
+family_proportions <- data_family %>% 
+  select(Family, Abundance) %>% 
+  group_by(Family) %>% 
+  summarise(Proportion = mean(Abundance)) 
+```
+
+###Genus data frame
+```{r}
+glom_genus <- tax_glom(physeq, taxrank = 'Genus')
+top20 <- names(sort(taxa_sums(glom_genus), decreasing=TRUE)[1:20])
+top20 #shows 20 results
+glom_genus_rel = transform_sample_counts(glom_genus, function(x) x/sum(x))
+genus_top20 = prune_taxa(top20, glom_genus_rel)
+data_genus <- psmelt(genus_top20) # create dataframe from phyloseq object
+```
+
+###Genus barplot
+```{r fig.width=20, fig.height=5}
+sample_names <- sort(unique(data_genus$Sample))
+genus_ab <- ggbarplot(data=data_genus, x= "Sample", y = "Abundance", color = "Genus", fill = "Genus", palette = get_palette("simpsons",21), ylab = "Relative Abundance", order = sample_names,, position = position_stack()) +labs(colour = "Genus", fill = "Genus") + facet_grid(~Timepoints, scales = "free_x", space = "free") + theme(axis.text.x = element_text(angle = 90)) +  theme(legend.text = element_text(face = "italic"))
+genus_ab
+```
+
+###Genus proportion
+```{r}
+genus_proportions <- data_genus %>% 
+  select(Genus, Abundance) %>% 
+  group_by(Genus) %>% 
+  summarise(Proportion = mean(Abundance)) 
+```
+
+##Final composition plot with Family and genus relative abundance
+```{r fig.width=20, fig.height=10}
+composition_barplots <- ggarrange(family_ab,genus_ab, nrow = 2, labels = c("A","B"))
+composition_barplots
+```
+
+##Saving composition plot as png
+```{r}
+setwd("/Users/karlavasco/OneDrive\ -\ Michigan\ State\ University/Zhang_lab/Marine_Iguana/figures-plots/microbiome")
+ggsave("composition_marine-iguana_qiime.png", plot = composition_barplots, width = 20, height = 10)
+```
+
+
+#Saving composition plots by separate
+```{r}
+library(ggplot2)
+setwd("/Users/karlavasco/OneDrive\ -\ Michigan\ State\ University/Zhang_lab/Marine_Iguana/figures-plots/microbiome")
+ggsave("Genus_marine-iguana_qiime.png", plot = genus_ab, width = 15, height = 5)
+ggsave("Family_marine-iguana_qiime.png", plot = family_ab, width = 15, height = 5)
+ggsave("Phylum_marine-iguana_qiime.png", plot = phylum_ab, width = 15, height = 5)

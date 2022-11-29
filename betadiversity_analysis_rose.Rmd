@@ -1,0 +1,1900 @@
+---
+title: "16S.Gala.PH.2021"
+Author: "Rose.KV."
+output: html_notebook
+---
+#Libraries needed
+```{r}
+library("phyloseq")
+library("ggplot2")
+library("ape")
+library("gridExtra")
+library("ggpubr")
+library("ggsignif")
+library(forcats)
+library(vegan)
+library(cowplot)
+library(tidyverse)
+theme_set(theme_cowplot())
+set.seed(7)
+source("C:/users/kithanro/Documents/16s_Gala_postharvest_2021/DenefLab-MicrobeMiseq/R/miseqR.R")
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/kithanro/Documents/16s_Gala_postharvest_2021")
+```
+
+
+#Phyloseq object
+```{r echo=TRUE}
+#read in otu table
+otu_table <- read.table("OTU_table.txt",
+                        sep="\t",row.names = 1,header = TRUE) %>%
+  as.matrix(otu_table,rownames=TRUE)
+
+#read in taxonomy
+taxonomy <- read_delim("taxonomy.csv", delim = ",", col_names = TRUE) %>% 
+  column_to_rownames(var = "OTU_ID") %>%
+  as.matrix()
+
+#read in metadata
+metadata=read.table("sample_metadata.tsv", sep = "\t", header = TRUE,
+              #row.names=1, 
+                    na.strings = "")  %>%
+  mutate(Timepoints = factor(Timepoints, ordered = TRUE, 
+                             levels = c("Day 0", "Day 7", "Day 14", 
+                                        "Day 25", "Day 49")),
+         Temp = Sample_ID) %>% #make a copy of the column
+  column_to_rownames(var = "Temp")
+metadata
+phy_tree = read_tree("tree.nwk")
+
+#import as phyloseq objects
+OTU = otu_table(otu_table,taxa_are_rows=TRUE)
+TAX = tax_table(taxonomy)
+META = sample_data(metadata)
+#Physeq object
+physeq <- phyloseq(OTU,TAX,META,phy_tree) #1796 taxa and 174 samples 
+
+#check reads per sample
+test_df.physeq <- as.data.frame(sample_sums(physeq)) %>% #sum reads per sample
+  rownames_to_column(var = "Sample_ID") #format for plot
+```
+
+#Fitering Chloroplast and Mitocondria OTUs
+```{r}
+`%notin%` <- Negate(`%in%`)
+# #Filtering samples *maybe only works on data frames
+# physeq_filtered <- subset_taxa(physeq, Order %notin% "Chloroplast", 
+#                                Family %notin% "Mitochondria")
+
+#physeq <- physeq_filtered
+physeq_filtered <- physeq %>% 
+  
+  subset_taxa(Order != " Chloroplast") %>%
+  subset_taxa(Family != " Mitochondria")
+   #1342 taxa and 174 samples 
+
+#check reads per sample
+test_df <- as.data.frame(sample_sums(physeq_filtered)) %>% #sum reads per sample
+  rownames_to_column(var = "Sample_ID") #format for plot
+
+# make the plot
+test_plot <- ggplot(test_df, aes(x = reorder(Sample_ID, -`sample_sums(physeq_filtered)`), #orders axis
+                                 y = `sample_sums(physeq_filtered)`
+                                 )) + 
+  geom_col() + ylab("Reads per sample") + xlab("Sample_ID") + #clean up labels
+  theme(axis.text.x = element_text(angle = -90, hjust=0))
+test_plot
+
+# more filtering to remove samples that didn't sequence well or OTUs that may not be real 
+  physeq_filtered2 <- physeq_filtered %>%
+  prune_samples(sample_sums(.) >= 200, .) #remove samples with <=1000 reads per samples
+  #1342 taxa and 138 samples 
+  
+  #check reads per sample
+test_df2 <- as.data.frame(sample_sums(physeq_filtered2)) %>% #sum reads per sample
+  rownames_to_column(var = "Sample_ID") #format for plot
+  
+# prune_taxa(taxa_sums(.) >= 2, .) # remove taxa with <=2 reads per OTU
+  
+# subset samples to each read numbers 
+  
+#extrct sample df from phylose object
+test_samp <- sample_data(physeq_filtered2)
+
+#To store phyloseq object in our local computer
+#saveRDS(physeq_filtered2, file = "C:/Users/kithanro/Documents/16s_Gala_postharvest_2021/physeq_filtered2.RDS") 
+
+#To restore back the phyloseq object from local computer to R
+
+#object name (phydeq_filtered2). eg. physeq_filtered2 <- readRDS(file = "C:/Users/kithanro/Documents/16s_Gala_postharvest_2021/physeq_filtered2.RDS")
+```
+
+
+
+#Beta diversity_analysis in Pulp: Control Vs. Ams-treated at different timepoints 
+
+```{r}
+# create a subset of the phyloseq object
+physq_sub <- physeq_filtered2 %>% 
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Order != " Chloroplast")%>%
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Tissue_types != "Skin") %>%
+  subset_samples(Timepoints != "Day 14")
+physq_sub #1342 taxa and 54 samples
+
+# Summary statistics on read counts 
+ min(sample_sums(physq_sub)) # 1012
+ mean(sample_sums(physq_sub)) # 9547.843
+ max(sample_sums(physq_sub))  #26402
+
+# get read counts 
+ sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+ ggplot(sample_sum_df, aes(x = sum)) + 
+   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+   ggtitle("Distribution of sample sequencing depth") + 
+   xlab("Read counts") +
+   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+ min(sample_sums(physq_scale)) # 236
+ mean(sample_sums(physq_scale)) #  241
+ max(sample_sums(physq_scale))  # 246
+```
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress= 0.1914591 
+physq_bc
+```
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            shape = "Treatments",
+                            color = "Timepoints") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Timepoints",
+                     breaks = c("Day 0", "Day 7", 
+                                "Day 25", "Day 49"), 
+                     values = c("#ED1E24", "#9ACA3C", "#40B9EB",
+                                "#426FB6", "#D771AD")) +
+  scale_shape_manual(aes(size = 6),
+                     name = "Treatments",
+                     breaks = c("Control", "ASM-treated"),
+                     values = c(16, 17)) +  
+  ggtitle("Pulp: Control Vs. ASM-treated")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+### Adonis test 
+adonb <- adonis(dat_bray~Timepoints*Treatments, data=sampledf)
+adonb #p= 0.001 (time); 0.004 (trtmnt); 0.001 (both)
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Treatments)
+permutest(beta) #NS
+
+### ANOSIM
+Tmpt <- get_variable(physq_scale, "Timepoints")
+time_ano <- anosim(dat_bray, Tmpt)
+time_ano$signif #p=0.001
+time_ano$statistic #R=0.2165042
+
+
+Trtmt <- get_variable(physq_scale, "Treatments")
+trm_ano <- anosim(dat_bray, Trtmt)
+trm_ano$signif #p=0.038
+trm_ano$statistic #R=0.03783432
+```
+
+
+
+#beta diversity in Pulp: Control Vs. ASM-treated (timepoints 0) 
+
+
+```{r}
+# pseq <- remove_samples(c("S6T6.0"), physeq_filtered2) %>% # create a subset of the phyloseq object
+#   
+# physq_sub = subset_samples(physeq_filtered2, Sample_ID != "S6T6.0")%>%
+#   
+# physq_sub = subset_samples(., sample_names(.) != "S6T6.0")%>%
+  
+physq_sub <- physeq_filtered2 %>% # create a subset of the phyloseq object
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Order != " Chloroplast")%>%
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Tissue_types != "Skin") %>%
+  subset_samples(Timepoints != "Day 14")%>%
+  subset_samples(Timepoints != "Day 25")%>%
+  subset_samples(Timepoints != "Day 49")%>%
+  subset_samples(Timepoints != "Day 7")%>%
+  subset_samples(Sample_ID != "S6T6.0")
+physq_sub #1342 taxa and 16 samples
+
+
+# test_psq <-  physq_filtered %>%
+#   subset_samples(Timepoints == "Day 0" & Tissue_types == "Skin" & 
+#                    Treatments == "Control" & Replicate != 6) 
+
+# Summary statistics on read counts 
+ min(sample_sums(physq_sub)) #5250
+ mean(sample_sums(physq_sub)) #11404
+ max(sample_sums(physq_sub))  #19508
+
+# get read counts 
+ sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+# ggplot(sample_sum_df, aes(x = sum)) + 
+#   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+#   ggtitle("Distribution of sample sequencing depth") + 
+#   xlab("Read counts") +
+#   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+min(sample_sums(physq_scale)) #5246
+mean(sample_sums(physq_scale)) #5250
+max(sample_sums(physq_scale))  #5254
+```
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress= 0.1858765  
+physq_bc
+```
+
+
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            # label = "Replicate",
+                            # shape = "Treatments",
+                            # color = "Timepoints") +
+                            color = "Treatments") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Treatments",
+                     breaks = c("Control", "ASM-treated"), 
+                     values = c("#ED1E24", "#9ACA3C")) +
+  # scale_color_manual(name = "Timepoints",
+  #                    breaks = c("Day 0", "Day 7", 
+  #                               "Day 25", "Day 49"), 
+  #                    values = c("#ED1E24", "#9ACA3C", 
+  #                               "#426FB6", "#D771AD")) +
+  # scale_shape_manual(aes(size = 6),
+  #                    name = "Treatments",
+  #                    breaks = c("Control", "ASM-treated"),
+  #                    values = c(16, 17)) +  
+  ggtitle("Pulp (Timepoint 0): Control Vs. ASM-treated")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+### Adonis test 
+adonb <- adonis(dat_bray~Treatments, data=sampledf)
+adonb #p= 0.002 (trtmnt), R=0.24366
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Treatments)
+permutest(beta) #NS
+
+### ANOSIM
+# Tmpt <- get_variable(physq_scale, "Timepoints")
+# time_ano <- anosim(dat_bray, Tmpt)
+# time_ano$signif #p=0.001
+# time_ano$statistic #R=0.5028489
+Trtmt <- get_variable(physq_scale, "Treatments")
+trm_ano <- anosim(dat_bray, Trtmt)
+trm_ano$signif #p=0.008
+trm_ano$statistic #R=0.2455357
+```
+
+#beta diversity in Pulp: Control Vs. ASM-treated (timepoints 7) 
+
+
+```{r}
+# pseq <- remove_samples(c("S6T6.0"), physeq_filtered2) %>% # create a subset of the phyloseq object
+#   
+# physq_sub = subset_samples(physeq_filtered2, Sample_ID != "S6T6.0")%>%
+#   
+# physq_sub = subset_samples(., sample_names(.) != "S6T6.0")%>%
+  
+physq_sub <- physeq_filtered2 %>% # create a subset of the phyloseq object
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Order != " Chloroplast")%>%
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Tissue_types != "Skin") %>%
+  subset_samples(Timepoints != "Day 14")%>%
+  subset_samples(Timepoints != "Day 25")%>%
+  subset_samples(Timepoints != "Day 49")%>%
+  subset_samples(Timepoints != "Day 0")%>%
+  subset_samples(Sample_ID != "S6T6.0")
+physq_sub #1342 taxa and 14 samples
+
+
+# test_psq <-  physq_filtered %>%
+#   subset_samples(Timepoints == "Day 0" & Tissue_types == "Skin" & 
+#                    Treatments == "Control" & Replicate != 6) 
+
+# Summary statistics on read counts 
+ min(sample_sums(physq_sub)) #2497
+ mean(sample_sums(physq_sub)) #10881
+ max(sample_sums(physq_sub))  #26402
+
+# get read counts 
+ sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+# ggplot(sample_sum_df, aes(x = sum)) + 
+#   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+#   ggtitle("Distribution of sample sequencing depth") + 
+#   xlab("Read counts") +
+#   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+min(sample_sums(physq_scale)) #2494
+mean(sample_sums(physq_scale)) #2496
+max(sample_sums(physq_scale))  #2499
+```
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress= 0.1467924 
+physq_bc
+```
+
+
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            # label = "Replicate",
+                            # shape = "Treatments",
+                            # color = "Timepoints") +
+                            color = "Treatments") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Treatments",
+                     breaks = c("Control", "ASM-treated"), 
+                     values = c("#ED1E24", "#9ACA3C")) +
+  # scale_color_manual(name = "Timepoints",
+  #                    breaks = c("Day 0", "Day 7", 
+  #                               "Day 25", "Day 49"), 
+  #                    values = c("#ED1E24", "#9ACA3C", 
+  #                               "#426FB6", "#D771AD")) +
+  # scale_shape_manual(aes(size = 6),
+  #                    name = "Treatments",
+  #                    breaks = c("Control", "ASM-treated"),
+  #                    values = c(16, 17)) +  
+  ggtitle("Pulp (Timepoint 7): Control Vs. ASM-treated")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+### Adonis test 
+adonb <- adonis(dat_bray~Treatments, data=sampledf)
+adonb #p= 0.007 (trtmnt), R=0.25385 
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Treatments)
+permutest(beta) #NS
+
+### ANOSIM
+# Tmpt <- get_variable(physq_scale, "Timepoints")
+# time_ano <- anosim(dat_bray, Tmpt)
+# time_ano$signif #p=0.001
+# time_ano$statistic #R=0.5028489
+Trtmt <- get_variable(physq_scale, "Treatments")
+trm_ano <- anosim(dat_bray, Trtmt)
+trm_ano$signif #p=0.012
+trm_ano$statistic #R=0.3052326
+```
+
+
+#beta diversity in Pulp: Control Vs. ASM-treated (timepoints 25) 
+
+
+```{r}
+# pseq <- remove_samples(c("S6T6.0"), physeq_filtered2) %>% # create a subset of the phyloseq object
+#   
+# physq_sub = subset_samples(physeq_filtered2, Sample_ID != "S6T6.0")%>%
+#   
+# physq_sub = subset_samples(., sample_names(.) != "S6T6.0")%>%
+  
+physq_sub <- physeq_filtered2 %>% # create a subset of the phyloseq object
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Order != " Chloroplast")%>%
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Tissue_types != "Skin") %>%
+  subset_samples(Timepoints != "Day 14")%>%
+  subset_samples(Timepoints != "Day 7")%>%
+  subset_samples(Timepoints != "Day 49")%>%
+  subset_samples(Timepoints != "Day 0")%>%
+  subset_samples(Sample_ID != "P1T1.3")
+physq_sub #1342 taxa and 10 samples
+
+
+# test_psq <-  physq_filtered %>%
+#   subset_samples(Timepoints == "Day 0" & Tissue_types == "Skin" & 
+#                    Treatments == "Control" & Replicate != 6) 
+
+# Summary statistics on read counts 
+ min(sample_sums(physq_sub)) #289
+ mean(sample_sums(physq_sub)) #6763
+ max(sample_sums(physq_sub))  #14317
+
+# get read counts 
+ sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+# ggplot(sample_sum_df, aes(x = sum)) + 
+#   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+#   ggtitle("Distribution of sample sequencing depth") + 
+#   xlab("Read counts") +
+#   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+min(sample_sums(physq_scale)) #284
+mean(sample_sums(physq_scale)) #287
+max(sample_sums(physq_scale))  #289
+```
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress=  0.08142158 
+physq_bc
+```
+
+
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            label = "Replicate",
+                            # shape = "Treatments",
+                            # color = "Timepoints") +
+                            color = "Treatments") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Treatments",
+                     breaks = c("Control", "ASM-treated"), 
+                     values = c("#ED1E24", "#9ACA3C")) +
+  # scale_color_manual(name = "Timepoints",
+  #                    breaks = c("Day 0", "Day 7", 
+  #                               "Day 25", "Day 49"), 
+  #                    values = c("#ED1E24", "#9ACA3C", 
+  #                               "#426FB6", "#D771AD")) +
+  # scale_shape_manual(aes(size = 6),
+  #                    name = "Treatments",
+  #                    breaks = c("Control", "ASM-treated"),
+  #                    values = c(16, 17)) +  
+  ggtitle("Pulp (Timepoint 25): Control Vs. ASM-treated")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+### Adonis test 
+adonb <- adonis(dat_bray~Treatments, data=sampledf)
+adonb #p= 0.005 (trtmnt), R=0.86799
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Treatments)
+permutest(beta) #NS
+
+### ANOSIM
+# Tmpt <- get_variable(physq_scale, "Timepoints")
+# time_ano <- anosim(dat_bray, Tmpt)
+# time_ano$signif #p=0.001
+# time_ano$statistic #R=0.5028489
+Trtmt <- get_variable(physq_scale, "Treatments")
+trm_ano <- anosim(dat_bray, Trtmt)
+trm_ano$signif #p=0.008
+trm_ano$statistic #R=1
+```
+
+
+#beta diversity in skin: Control Vs. ASM-treated (timepoints 49) 
+
+
+```{r}
+# pseq <- remove_samples(c("S6T6.0"), physeq_filtered2) %>% # create a subset of the phyloseq object
+#   
+# physq_sub = subset_samples(physeq_filtered2, Sample_ID != "S6T6.0")%>%
+#   
+# physq_sub = subset_samples(., sample_names(.) != "S6T6.0")%>%
+  
+physq_sub <- physeq_filtered2 %>% # create a subset of the phyloseq object
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Order != " Chloroplast")%>%
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Tissue_types != "Skin") %>%
+  subset_samples(Timepoints != "Day 14")%>%
+  subset_samples(Timepoints != "Day 7")%>%
+  subset_samples(Timepoints != "Day 25")%>%
+  subset_samples(Timepoints != "Day 0")%>%
+  subset_samples(Sample_ID != "S6T6.0")
+physq_sub #1342 taxa and 13 samples
+
+
+# test_psq <-  physq_filtered %>%
+#   subset_samples(Timepoints == "Day 0" & Tissue_types == "Skin" & 
+#                    Treatments == "Control" & Replicate != 6) 
+
+# Summary statistics on read counts 
+ min(sample_sums(physq_sub)) #414
+ mean(sample_sums(physq_sub)) #6552
+ max(sample_sums(physq_sub))  #17916
+
+# get read counts 
+ sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+# ggplot(sample_sum_df, aes(x = sum)) + 
+#   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+#   ggtitle("Distribution of sample sequencing depth") + 
+#   xlab("Read counts") +
+#   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+min(sample_sums(physq_scale)) #409
+mean(sample_sums(physq_scale)) #413
+max(sample_sums(physq_scale))  #416
+```
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress=  0.1065638  
+physq_bc
+```
+
+
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            # label = "Replicate",
+                            # shape = "Treatments",
+                            # color = "Timepoints") +
+                            color = "Treatments") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Treatments",
+                     breaks = c("Control", "ASM-treated"), 
+                     values = c("#ED1E24", "#9ACA3C")) +
+  # scale_color_manual(name = "Timepoints",
+  #                    breaks = c("Day 0", "Day 7", 
+  #                               "Day 25", "Day 49"), 
+  #                    values = c("#ED1E24", "#9ACA3C", 
+  #                               "#426FB6", "#D771AD")) +
+  # scale_shape_manual(aes(size = 6),
+  #                    name = "Treatments",
+  #                    breaks = c("Control", "ASM-treated"),
+  #                    values = c(16, 17)) +  
+  ggtitle("Pulp (Timepoint 49): Control Vs. ASM-treated")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+### Adonis test 
+adonb <- adonis(dat_bray~Treatments, data=sampledf)
+adonb #p= 0.958 (trtmnt), R=0.03016
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Treatments)
+permutest(beta) #NS
+
+### ANOSIM
+# Tmpt <- get_variable(physq_scale, "Timepoints")
+# time_ano <- anosim(dat_bray, Tmpt)
+# time_ano$signif #p=0.001
+# time_ano$statistic #R=0.5028489
+Trtmt <- get_variable(physq_scale, "Treatments")
+trm_ano <- anosim(dat_bray, Trtmt)
+trm_ano$signif #p=0.964
+trm_ano$statistic #R=-0.1064815
+```
+
+
+
+
+
+
+#Beta diversity_analysis between timepoints and treatments in pulp (without even depth)
+
+```{r}
+# create a subset of the phyloseq object
+physq_sub <- physeq_filtered2 %>% 
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Tissue_types != "Skin") %>%
+  subset_samples(Timepoints != "Day 14")
+physq_sub #1469 taxa and 51 samples
+
+# Summary statistics on read counts 
+ min(sample_sums(physq_sub)) # 1544
+ mean(sample_sums(physq_sub)) # 11898.21
+ max(sample_sums(physq_sub))  #31387
+
+# get read counts 
+ sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+ ggplot(sample_sum_df, aes(x = sum)) + 
+   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+   ggtitle("Distribution of sample sequencing depth") + 
+   xlab("Read counts") +
+   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ # physq_scale2 <- physq_sub2 %>%
+ # scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+ # min(sample_sums(physq_scale2)) # 1541
+ # mean(sample_sums(physq_scale2)) # 1543.846
+ # max(sample_sums(physq_scale2))  # 1549
+```
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc2 <- ordinate(physq_sub, 
+                     method = "NMDS", 
+                     k=3, maxit=100, try=100,
+                     distance = "bray") #stress= 0.1605992  
+physq_bc2
+```
+
+
+### Plot
+Generate the plot
+```{r}
+ordplotG2 <- plot_ordination(physq_sub, 
+                            ordination = physq_bc2, 
+                            type = "samples", 
+                            shape = "Treatments",
+                            color = "Timepoints") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Timepoints",
+                     breaks = c("Day 0", "Day 7", 
+                                "Day 25", "Day 49"), 
+                     values = c("#ED1E24", "#9ACA3C", "#40B9EB",
+                                "#426FB6", "#D771AD")) +
+  scale_shape_manual(aes(size = 6),
+                     name = "Treatments",
+                     breaks = c("Control", "ASM-treated"),
+                     values = c(16, 17)) +  
+  ggtitle("Pulp: Control Vs. ASM-treated")
+ordplotG2
+```
+
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_sub, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_sub))
+### Adonis test 
+adonb <- adonis(dat_bray~Timepoints*Treatments, data=sampledf)
+adonb #p= 0.001 (time); 0.014(trtmnt); 0.001 (both)
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Treatments)
+permutest(beta) #NS
+
+### ANOSIM
+Tmpt <- get_variable(physq_sub, "Timepoints")
+time_ano <- anosim(dat_bray, Tmpt)
+time_ano$signif #p=0.001
+time_ano$statistic #R=0.2104641
+
+Trtmt <- get_variable(physq_sub, "Treatments")
+trm_ano <- anosim(dat_bray, Trtmt)
+trm_ano$signif #p=0.04
+trm_ano$statistic #R=0.04592246
+```
+
+
+
+
+#beta diversity in skin: Control Vs. ASM-treated between timepoints 
+
+
+```{r}
+# pseq <- remove_samples(c("S6T6.0"), physeq_filtered2) %>% # create a subset of the phyloseq object
+#   
+# physq_sub = subset_samples(physeq_filtered2, Sample_ID != "S6T6.0")%>%
+#   
+# physq_sub = subset_samples(., sample_names(.) != "S6T6.0")%>%
+  
+physq_sub <- physeq_filtered2 %>% # create a subset of the phyloseq object
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Order != " Chloroplast")%>%
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Tissue_types != "Pulp") %>%
+  subset_samples(Timepoints != "Day 14")%>%
+  subset_samples(Sample_ID != "S6T6.0")
+physq_sub #1342 taxa and 43 samples
+
+
+# test_psq <-  physq_filtered %>%
+#   subset_samples(Timepoints == "Day 0" & Tissue_types == "Skin" & 
+#                    Treatments == "Control" & Replicate != 6) 
+
+# Summary statistics on read counts 
+ min(sample_sums(physq_sub)) #1214
+ mean(sample_sums(physq_sub)) #6288.026
+ max(sample_sums(physq_sub))  #13603
+
+# get read counts 
+ sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+# ggplot(sample_sum_df, aes(x = sum)) + 
+#   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+#   ggtitle("Distribution of sample sequencing depth") + 
+#   xlab("Read counts") +
+#   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+min(sample_sums(physq_scale)) #1208
+mean(sample_sums(physq_scale)) #1213.921
+max(sample_sums(physq_scale))  #1220
+```
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress= 0.1965925 
+physq_bc
+```
+
+
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            # label = "Replicate",
+                            shape = "Treatments",
+                            color = "Timepoints") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Timepoints",
+                     breaks = c("Day 0", "Day 7", 
+                                "Day 25", "Day 49"), 
+                     values = c("#ED1E24", "#9ACA3C", 
+                                "#426FB6", "#D771AD")) +
+  scale_shape_manual(aes(size = 6),
+                     name = "Treatments",
+                     breaks = c("Control", "ASM-treated"),
+                     values = c(16, 17)) +  
+  ggtitle("Skin: Control Vs. ASM-treated")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+### Adonis test 
+adonb <- adonis(dat_bray~Timepoints*Treatments, data=sampledf)
+adonb #p= 0.001 (time); 0.018 (trtmt); 0.002 (both)
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Treatments)
+permutest(beta) #NS
+
+### ANOSIM
+Tmpt <- get_variable(physq_scale, "Timepoints")
+time_ano <- anosim(dat_bray, Tmpt)
+time_ano$signif #p=0.001
+time_ano$statistic #R=0.5028489
+Trtmt <- get_variable(physq_scale, "Treatments")
+trm_ano <- anosim(dat_bray, Trtmt)
+trm_ano$signif #p=0.272
+trm_ano$statistic #R=0.01336395
+```
+
+#beta diversity in skin: Control Vs. ASM-treated (timepoints 0) 
+
+
+```{r}
+# pseq <- remove_samples(c("S6T6.0"), physeq_filtered2) %>% # create a subset of the phyloseq object
+#   
+# physq_sub = subset_samples(physeq_filtered2, Sample_ID != "S6T6.0")%>%
+#   
+# physq_sub = subset_samples(., sample_names(.) != "S6T6.0")%>%
+  
+physq_sub <- physeq_filtered2 %>% # create a subset of the phyloseq object
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Order != " Chloroplast")%>%
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Tissue_types != "Pulp") %>%
+  subset_samples(Timepoints != "Day 14")%>%
+  subset_samples(Timepoints != "Day 25")%>%
+  subset_samples(Timepoints != "Day 49")%>%
+  subset_samples(Timepoints != "Day 7")%>%
+  subset_samples(Sample_ID != "S6T6.0")
+physq_sub #1342 taxa and 15 samples
+
+
+# test_psq <-  physq_filtered %>%
+#   subset_samples(Timepoints == "Day 0" & Tissue_types == "Skin" & 
+#                    Treatments == "Control" & Replicate != 6) 
+
+# Summary statistics on read counts 
+ min(sample_sums(physq_sub)) #5510
+ mean(sample_sums(physq_sub)) #7395
+ max(sample_sums(physq_sub))  #10988
+
+# get read counts 
+ sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+# ggplot(sample_sum_df, aes(x = sum)) + 
+#   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+#   ggtitle("Distribution of sample sequencing depth") + 
+#   xlab("Read counts") +
+#   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+min(sample_sums(physq_scale)) #5508
+mean(sample_sums(physq_scale)) #5513
+max(sample_sums(physq_scale))  #5527
+```
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress= 0.2055888 
+physq_bc
+```
+
+
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            # label = "Replicate",
+                            # shape = "Treatments",
+                            # color = "Timepoints") +
+                            color = "Treatments") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Treatments",
+                     breaks = c("Control", "ASM-treated"), 
+                     values = c("#ED1E24", "#9ACA3C")) +
+  # scale_color_manual(name = "Timepoints",
+  #                    breaks = c("Day 0", "Day 7", 
+  #                               "Day 25", "Day 49"), 
+  #                    values = c("#ED1E24", "#9ACA3C", 
+  #                               "#426FB6", "#D771AD")) +
+  # scale_shape_manual(aes(size = 6),
+  #                    name = "Treatments",
+  #                    breaks = c("Control", "ASM-treated"),
+  #                    values = c(16, 17)) +  
+  ggtitle("Skin (Timepoint 0): Control Vs. ASM-treated")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+### Adonis test 
+adonb <- adonis(dat_bray~Treatments, data=sampledf)
+adonb #p= 0.201 (trtmnt), R=0.08729
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Treatments)
+permutest(beta) #NS
+
+### ANOSIM
+# Tmpt <- get_variable(physq_scale, "Timepoints")
+# time_ano <- anosim(dat_bray, Tmpt)
+# time_ano$signif #p=0.001
+# time_ano$statistic #R=0.5028489
+Trtmt <- get_variable(physq_scale, "Treatments")
+trm_ano <- anosim(dat_bray, Trtmt)
+trm_ano$signif #p=0.291
+trm_ano$statistic #R=0.02478134
+```
+
+#beta diversity in skin: Control Vs. ASM-treated (timepoints 7) 
+
+
+```{r}
+# pseq <- remove_samples(c("S6T6.0"), physeq_filtered2) %>% # create a subset of the phyloseq object
+#   
+# physq_sub = subset_samples(physeq_filtered2, Sample_ID != "S6T6.0")%>%
+#   
+# physq_sub = subset_samples(., sample_names(.) != "S6T6.0")%>%
+  
+physq_sub <- physeq_filtered2 %>% # create a subset of the phyloseq object
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Order != " Chloroplast")%>%
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Tissue_types != "Pulp") %>%
+  subset_samples(Timepoints != "Day 14")%>%
+  subset_samples(Timepoints != "Day 25")%>%
+  subset_samples(Timepoints != "Day 49")%>%
+  subset_samples(Timepoints != "Day 0")%>%
+  subset_samples(Sample_ID != "S6T6.0")
+physq_sub #1342 taxa and 10 samples
+
+
+# test_psq <-  physq_filtered %>%
+#   subset_samples(Timepoints == "Day 0" & Tissue_types == "Skin" & 
+#                    Treatments == "Control" & Replicate != 6) 
+
+# Summary statistics on read counts 
+ min(sample_sums(physq_sub)) #2567
+ mean(sample_sums(physq_sub)) #5907
+ max(sample_sums(physq_sub))  #13603
+
+# get read counts 
+ sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+# ggplot(sample_sum_df, aes(x = sum)) + 
+#   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+#   ggtitle("Distribution of sample sequencing depth") + 
+#   xlab("Read counts") +
+#   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+min(sample_sums(physq_scale)) #2559
+mean(sample_sums(physq_scale)) #2568
+max(sample_sums(physq_scale))  #2574
+```
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress= 0.1128232 
+physq_bc
+```
+
+
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            # label = "Replicate",
+                            # shape = "Treatments",
+                            # color = "Timepoints") +
+                            color = "Treatments") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Treatments",
+                     breaks = c("Control", "ASM-treated"), 
+                     values = c("#ED1E24", "#9ACA3C")) +
+  # scale_color_manual(name = "Timepoints",
+  #                    breaks = c("Day 0", "Day 7", 
+  #                               "Day 25", "Day 49"), 
+  #                    values = c("#ED1E24", "#9ACA3C", 
+  #                               "#426FB6", "#D771AD")) +
+  # scale_shape_manual(aes(size = 6),
+  #                    name = "Treatments",
+  #                    breaks = c("Control", "ASM-treated"),
+  #                    values = c(16, 17)) +  
+  ggtitle("Skin (Timepoint 7): Control Vs. ASM-treated")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+### Adonis test 
+adonb <- adonis(dat_bray~Treatments, data=sampledf)
+adonb #p= 0.025 (trtmnt), R=0.27263 
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Treatments)
+permutest(beta) #NS
+
+### ANOSIM
+# Tmpt <- get_variable(physq_scale, "Timepoints")
+# time_ano <- anosim(dat_bray, Tmpt)
+# time_ano$signif #p=0.001
+# time_ano$statistic #R=0.5028489
+Trtmt <- get_variable(physq_scale, "Treatments")
+trm_ano <- anosim(dat_bray, Trtmt)
+trm_ano$signif #p=0.056
+trm_ano$statistic #R=0.3452381
+```
+
+
+#beta diversity in skin: Control Vs. ASM-treated (timepoints 25) 
+
+
+```{r}
+# pseq <- remove_samples(c("S6T6.0"), physeq_filtered2) %>% # create a subset of the phyloseq object
+#   
+# physq_sub = subset_samples(physeq_filtered2, Sample_ID != "S6T6.0")%>%
+#   
+# physq_sub = subset_samples(., sample_names(.) != "S6T6.0")%>%
+  
+physq_sub <- physeq_filtered2 %>% # create a subset of the phyloseq object
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Order != " Chloroplast")%>%
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Tissue_types != "Pulp") %>%
+  subset_samples(Timepoints != "Day 14")%>%
+  subset_samples(Timepoints != "Day 7")%>%
+  subset_samples(Timepoints != "Day 49")%>%
+  subset_samples(Timepoints != "Day 0")%>%
+  subset_samples(Sample_ID != "S6T6.0")
+physq_sub #1342 taxa and 10 samples
+
+
+# test_psq <-  physq_filtered %>%
+#   subset_samples(Timepoints == "Day 0" & Tissue_types == "Skin" & 
+#                    Treatments == "Control" & Replicate != 6) 
+
+# Summary statistics on read counts 
+ min(sample_sums(physq_sub)) #475
+ mean(sample_sums(physq_sub)) #3066
+ max(sample_sums(physq_sub))  #9088
+
+# get read counts 
+ sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+# ggplot(sample_sum_df, aes(x = sum)) + 
+#   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+#   ggtitle("Distribution of sample sequencing depth") + 
+#   xlab("Read counts") +
+#   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+min(sample_sums(physq_scale)) #469
+mean(sample_sums(physq_scale)) #473
+max(sample_sums(physq_scale))  #477
+```
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress=  0.1245849 
+physq_bc
+```
+
+
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            # label = "Replicate",
+                            # shape = "Treatments",
+                            # color = "Timepoints") +
+                            color = "Treatments") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Treatments",
+                     breaks = c("Control", "ASM-treated"), 
+                     values = c("#ED1E24", "#9ACA3C")) +
+  # scale_color_manual(name = "Timepoints",
+  #                    breaks = c("Day 0", "Day 7", 
+  #                               "Day 25", "Day 49"), 
+  #                    values = c("#ED1E24", "#9ACA3C", 
+  #                               "#426FB6", "#D771AD")) +
+  # scale_shape_manual(aes(size = 6),
+  #                    name = "Treatments",
+  #                    breaks = c("Control", "ASM-treated"),
+  #                    values = c(16, 17)) +  
+  ggtitle("Skin (Timepoint 25): Control Vs. ASM-treated")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+### Adonis test 
+adonb <- adonis(dat_bray~Treatments, data=sampledf)
+adonb #p= 0.003 (trtmnt), R=0.38637 
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Treatments)
+permutest(beta) #NS
+
+### ANOSIM
+# Tmpt <- get_variable(physq_scale, "Timepoints")
+# time_ano <- anosim(dat_bray, Tmpt)
+# time_ano$signif #p=0.001
+# time_ano$statistic #R=0.5028489
+Trtmt <- get_variable(physq_scale, "Treatments")
+trm_ano <- anosim(dat_bray, Trtmt)
+trm_ano$signif #p=0.008
+trm_ano$statistic #R=0.6785714
+```
+
+
+#beta diversity in skin: Control Vs. ASM-treated (timepoints 49) 
+
+
+```{r}
+# pseq <- remove_samples(c("S6T6.0"), physeq_filtered2) %>% # create a subset of the phyloseq object
+#   
+# physq_sub = subset_samples(physeq_filtered2, Sample_ID != "S6T6.0")%>%
+#   
+# physq_sub = subset_samples(., sample_names(.) != "S6T6.0")%>%
+  
+physq_sub <- physeq_filtered2 %>% # create a subset of the phyloseq object
+  subset_taxa(Family != " Mitochondria")%>%
+  subset_taxa(Order != " Chloroplast")%>%
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Tissue_types != "Pulp") %>%
+  subset_samples(Timepoints != "Day 14")%>%
+  subset_samples(Timepoints != "Day 7")%>%
+  subset_samples(Timepoints != "Day 25")%>%
+  subset_samples(Timepoints != "Day 0")%>%
+  subset_samples(Sample_ID != "S6T6.0")
+physq_sub #1342 taxa and 8 samples
+
+
+# test_psq <-  physq_filtered %>%
+#   subset_samples(Timepoints == "Day 0" & Tissue_types == "Skin" & 
+#                    Treatments == "Control" & Replicate != 6) 
+
+# Summary statistics on read counts 
+ min(sample_sums(physq_sub)) #282
+ mean(sample_sums(physq_sub)) #4769
+ max(sample_sums(physq_sub))  #12079
+
+# get read counts 
+ sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+# ggplot(sample_sum_df, aes(x = sum)) + 
+#   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+#   ggtitle("Distribution of sample sequencing depth") + 
+#   xlab("Read counts") +
+#   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+min(sample_sums(physq_scale)) #272
+mean(sample_sums(physq_scale)) #280
+max(sample_sums(physq_scale))  #283
+```
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress=  0.1245849 
+physq_bc
+```
+
+
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            # label = "Replicate",
+                            # shape = "Treatments",
+                            # color = "Timepoints") +
+                            color = "Treatments") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Treatments",
+                     breaks = c("Control", "ASM-treated"), 
+                     values = c("#ED1E24", "#9ACA3C")) +
+  # scale_color_manual(name = "Timepoints",
+  #                    breaks = c("Day 0", "Day 7", 
+  #                               "Day 25", "Day 49"), 
+  #                    values = c("#ED1E24", "#9ACA3C", 
+  #                               "#426FB6", "#D771AD")) +
+  # scale_shape_manual(aes(size = 6),
+  #                    name = "Treatments",
+  #                    breaks = c("Control", "ASM-treated"),
+  #                    values = c(16, 17)) +  
+  ggtitle("Skin (Timepoint 49): Control Vs. ASM-treated")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+### Adonis test 
+adonb <- adonis(dat_bray~Treatments, data=sampledf)
+adonb #p= 0.668 (trtmnt), R=0.12465
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Treatments)
+permutest(beta) #NS
+
+### ANOSIM
+# Tmpt <- get_variable(physq_scale, "Timepoints")
+# time_ano <- anosim(dat_bray, Tmpt)
+# time_ano$signif #p=0.001
+# time_ano$statistic #R=0.5028489
+Trtmt <- get_variable(physq_scale, "Treatments")
+trm_ano <- anosim(dat_bray, Trtmt)
+trm_ano$signif #p=0.684
+trm_ano$statistic #R=-0.0625
+```
+
+
+
+#Beta diversity_analysis- For control between tissues and time
+
+```{r}
+# create a subset of the phyloseq object
+physq_sub <- physeq_filtered2 %>% 
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Treatments != "ASM-treated")  %>%
+  subset_samples(Treatments == "Control")
+ 
+physq_sub #1488 taxa and 61 samples
+
+# check samples after filter
+sample_names(physq_sub)
+
+# Summary statistics on read counts 
+# min(sample_sums(physq_sub)) #504
+# mean(sample_sums(physq_sub)) #1124
+# max(sample_sums(physq_sub))  #5478
+
+# get read counts 
+# sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+# ggplot(sample_sum_df, aes(x = sum)) + 
+#   geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+#   ggtitle("Distribution of sample sequencing depth") + 
+#   xlab("Read counts") +
+#   theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+ physq_scale <- physq_sub %>%
+ scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+# min(sample_sums(physq_scale)) #499
+# mean(sample_sums(physq_scale)) #504
+# max(sample_sums(physq_scale))  #509
+```
+
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress= 0.162732 
+physq_bc
+```
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            shape = "Tissue_types",
+                            color = "Timepoints") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Timepoints",
+                     breaks = c("Day 0", "Day 7", "Day 14",
+                                "Day 25", "Day 49"), 
+                     values = c("#ED1E24", "#9ACA3C", "#40B9EB",
+                                "#426FB6", "#D771AD")) +
+  scale_shape_manual(aes(size = 6),
+                     name = "Tissue_types",
+                     breaks = c("Skin", "Pulp"),
+                     values = c(16, 17)) +  
+  ggtitle("Skin Vs. Pulp")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+
+### Adonis test 
+adonb <- adonis(dat_bray~Timepoints*Tissue_types, data=sampledf)
+adonb #P value : 0.001 (time) 0.001 (tissue) 0.145 (both)
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+beta
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Tissue_types)
+permutest(beta) #NS
+
+### ANOSIM
+Tmpt <- get_variable(physq_sub, "Timepoints")
+time_ano <- anosim(dat_bray, Tmpt)
+time_ano$signif 
+time_ano$statistic #P: 001 R= 0.2092851
+Tiss <- get_variable(physq_sub, "Tissue_types")
+tis_ano <- anosim(dat_bray, Tiss)
+tis_ano$signif 
+tis_ano$statistic #p = 0.001, R=0.3319004
+```
+
+#Beta diversity_analysis- For ASM-treated between tissues and time
+
+```{r}
+# create a subset of the phyloseq object
+physq_sub <- physeq_filtered2 %>% 
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Treatments != "Control") %>%
+  subset_samples(Treatments == "ASM-treated") 
+physq_sub #1488 taxa and 47 samples
+
+# check samples after filter
+sample_names(physq_sub)
+
+# Summary statistics on read counts 
+min(sample_sums(physq_sub)) #1107
+mean(sample_sums(physq_sub)) #9234.681
+max(sample_sums(physq_sub))  #31387
+
+# get read counts 
+sample_sum_df <- data.frame(sum = sample_sums(physq_sub))
+
+# Histogram of sample read counts
+ggplot(sample_sum_df, aes(x = sum)) + 
+  geom_histogram(color = "black", fill = "gray", binwidth = 100) +
+  ggtitle("Distribution of sample sequencing depth") + 
+  xlab("Read counts") +
+  theme(axis.title.y = element_blank())
+
+# scale samples to even depth using custom function
+  physq_scale <- physq_sub %>%
+  scale_reads(round = "round") 
+
+# Summary statistics on read counts 
+min(sample_sums(physq_scale)) #1101
+mean(sample_sums(physq_scale)) #1105.851
+max(sample_sums(physq_scale))  #1113
+
+
+```
+
+
+### Ordinate
+Conduct ordination analysis
+```{r, results='hide'}
+physq_bc <- ordinate(physq_scale, 
+                     method = "NMDS", 
+                     k=2, maxit=100, try=100,
+                     distance = "bray") #stress= 0.1597324 
+physq_bc
+```
+
+### Plot
+Generate the plot
+```{r}
+ordplotG <- plot_ordination(physq_scale, 
+                            ordination = physq_bc, 
+                            type = "samples", 
+                            shape = "Tissue_types",
+                            color = "Timepoints") +
+  geom_point(size = 3) +
+  # change colors and shapes
+  scale_color_manual(name = "Timepoints",
+                     breaks = c("Day 0", "Day 7",
+                                "Day 25", "Day 49"), 
+                     values = c("#ED1E24", "#9ACA3C", 
+                                "#426FB6", "#D771AD")) +
+  scale_shape_manual(aes(size = 6),
+                     name = "Tissue_types",
+                     breaks = c("Skin", "Pulp"),
+                     values = c(16, 17)) +  
+  ggtitle("Skin Vs. Pulp")
+ordplotG
+```
+
+### Tests
+Extra values and do statistical analysis 
+```{r eval=FALSE, include=FALSE}
+# Calculate bray curtis distance matrix
+dat_bray <- phyloseq::distance(physq_scale, method = "bray") 
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(physq_scale))
+
+### Adonis test 
+adonb <- adonis(dat_bray~Timepoints*Tissue_types, data=sampledf)
+adonb #P value : 0.001 (time) 0.001 (tissue) 0.002 (both)
+
+### Homogeneity of dispersion test 
+beta <- betadisper(dat_bray, sampledf$Timepoints)
+beta
+permutest(beta) #NS
+beta <- betadisper(dat_bray, sampledf$Tissue_types)
+permutest(beta) #NS
+
+### ANOSIM
+Tmpt <- get_variable(physq_sub, "Timepoints")
+time_ano <- anosim(dat_bray, Tmpt)
+time_ano$signif 
+time_ano$statistic #P: 001 R= 0.3862
+Tiss <- get_variable(physq_sub, "Tissue_types")
+tis_ano <- anosim(dat_bray, Tiss)
+tis_ano$signif 
+tis_ano$statistic #p = 0.001, R=0.4980106
+```
+
+#Beta Diversity by treatments
+
+##Weighted Unifrac stats 
+Analyzed by Timepoints
+```{r}
+## PERMANOVA
+library(vegan)
+physeq_filtered3 <- physeq_filtered2 %>%
+  subset_samples(Treatments != "None") 
+
+wuinfrac_dist <- phyloseq::distance(physeq_filtered3, method="wunifrac") #RUN this only once because it takes a lot of time
+
+adonis_wunifrac = adonis2(wuinfrac_dist ~ sample_data(physeq_filtered3)$Treatments)
+adonis_wunifrac
+
+
+## Significant PERMANOVA indicates that centroid (or spatial median) among groups is different and/or with-group dispersion among groups is different
+## PERMDISP
+
+# subset phyloseq object as for sample data
+wuni_disp <-betadisper(wuinfrac_dist, sample_data(physeq_filtered3)$Treatments, type=c("median"))
+anova(wuni_disp)
+ 
+## If PERMANOVA and PERMDISP are both significant, you can use plotting to tell if PERMANOVA was significant based on centroid (or spatial median)
+plot(wuni_disp)
+
+#?plot.betadisper
+## Would look better with higher replication for groups
+plot(wuni_disp, label = F)
+
+## Plot with 1 standard deviation ellipses around the group medians
+## sample size issue here, but you get the idea
+plot(wuni_disp, label = F, hull = F, ellipse = T)
+
+## Within-group dispersion that PERMDISP is testing
+boxplot(wuni_disp, las = 2, cex.lab=1.5)
+?boxplot
+
+## pairwise p-values
+TukeyHSD(wuni_disp)
+scores(wuni_disp, 1:4, display = "centroids")
+rda(otu_table)
+```
+
+##Weighted unifrac beta diversity plot with phyloseq
+Used to check the PCoA %
+```{r}
+beta_wu <- ordinate(physeq_filtered3, "PCoA", "wunifrac")
+beta_wu_plot = plot_ordination(physeq_filtered3, beta_wu, type="Treatments", color="Treatments", shape="Treatments", title="PCoA Weighted Unifrac") + stat_ellipse(type = "t", linetype = 3) + stat_ellipse(type = "t") + theme_bw()+labs(colour = "Treatments") #To add arrows https://neavemj.github.io/posts/coralMicrobiome
+beta_wu_plot
+```
+
+#Final weighted unifrac plot
+```{r}
+label_perm <- expression(paste("PERMANOVA, ",R^2 ,"= 0.16, ", paste(italic('p')),"=0.001"))
+beta_scatter = as.data.frame(beta_wu[["vectors"]])
+beta_meta = merge(beta_scatter,metadata,by = 0,all=F)
+pmain_wuF = ggscatter(beta_meta, x = "Axis.1", y = "Axis.2", color = "Treatments", palette = "aaas",ellipse = TRUE, ellipse.level=.5,mean.point = F, mean.point.size = 5, star.plot = F) +labs(x = "PCoA 1 (40.2%) ", y = "PCoA 2 (19.3%)", colour = "Treatments", fill = "Treatments") +annotate("text", x = -0.04, y = -0.06, label = label_perm, colour = "black")
+pmain_wuF
+```
+
+#Beta Diversity by time points
+
+##Weighted Unifrac stats 
+Analyzed by Timepoints
+```{r}
+## PERMANOVA
+library(vegan)
+wuinfrac_dist = phyloseq::distance(physeq_filtered.cs, method="wunifrac")
+#RUN this only once because it takes a lot of time
+
+adonis_wunifrac = adonis2(wuinfrac_dist ~ sample_data(physeq_filtered.cs)$Timepoints)
+adonis_wunifrac
+
+
+## Significant PERMANOVA indicates that centroid (or spatial median) among groups is different and/or with-group dispersion among groups is different
+## PERMDISP
+
+# subset phyloseq object as for sample data
+wuni_disp <-betadisper(wuinfrac_dist, sample_data(physeq_filtered.cs)$Timepoints, type=c("median"))
+anova(wuni_disp)
+ 
+## If PERMANOVA and PERMDISP are both significant, you can use plotting to tell if PERMANOVA was significant based on centroid (or spatial median)
+plot(wuni_disp)
+
+#?plot.betadisper
+## Would look better with higher replication for groups
+plot(wuni_disp, label = F)
+
+## Plot with 1 standard deviation ellipses around the group medians
+## sample size issue here, but you get the idea
+plot(wuni_disp, label = F, hull = F, ellipse = T)
+
+## Within-group dispersion that PERMDISP is testing
+boxplot(wuni_disp, las = 2, cex.lab=1.5)
+?boxplot
+
+## pairwise p-values
+TukeyHSD(wuni_disp)
+scores(wuni_disp, 1:4, display = "centroids")
+rda(otu_table)
+```
+
+
+##Weighted unifrac beta diversity plot with phyloseq
+Used to check the PCoA %
+```{r}
+beta_wu <- ordinate(physeq_filtered2, "PCoA", "wunifrac")
+beta_wu_plot = plot_ordination(physeq_filtered2, beta_wu, type="Timepoints", color="Timepoints", shape="Timepoints", title="PCoA Weighted Unifrac") + stat_ellipse(type = "t", linetype = 3) + stat_ellipse(type = "t") + theme_bw()+labs(colour = "Timepoints") #To add arrows https://neavemj.github.io/posts/coralMicrobiome
+beta_wu_plot
+```
+
+#Final weighted unifrac plot
+```{r}
+label_perm <- expression(paste("PERMANOVA, ",R^2 ,"= 0.16, ", paste(italic('p')),"=0.001"))
+beta_scatter = as.data.frame(beta_wu[["vectors"]])
+beta_meta = merge(beta_scatter,metadata,by = 0,all=F)
+pmain_wuF = ggscatter(beta_meta, x = "Axis.1", y = "Axis.2", color = "Timepoints", palette = "aaas",ellipse = TRUE, ellipse.level=.5,mean.point = F, mean.point.size = 5, star.plot = F) +labs(x = "PCoA 1 (40.2%) ", y = "PCoA 2 (19.3%)", colour = "Timepoints", fill = "Timepoints") +annotate("text", x = -0.04, y = -0.06, label = label_perm, colour = "black")
+pmain_wuF
+```
+
+
+
+
+#Beta Diversity by tissue_types
+
+##Weighted Unifrac stats 
+Analyzed by Timepoints
+```{r}
+## PERMANOVA
+library(vegan)
+
+physeq_filtered3 <- physeq_filtered2 %>%
+  subset_samples(Treatments != "None") %>%
+  subset_samples(Treatments != "Control") 
+
+wuinfrac_dist = phyloseq::distance(physeq_filtered3, method="wunifrac") #RUN this only once because it takes a lot of time
+
+adonis_wunifrac = adonis2(wuinfrac_dist ~ sample_data(physeq_filtered3)$Tissue_types)
+adonis_wunifrac
+
+
+## Significant PERMANOVA indicates that centroid (or spatial median) among groups is different and/or with-group dispersion among groups is different
+## PERMDISP
+
+# subset phyloseq object as for sample data
+wuni_disp <-betadisper(wuinfrac_dist, sample_data(physeq_filtered3)$Tissue_types, type=c("median"))
+anova(wuni_disp)
+ 
+## If PERMANOVA and PERMDISP are both significant, you can use plotting to tell if PERMANOVA was significant based on centroid (or spatial median)
+plot(wuni_disp)
+
+#?plot.betadisper
+## Would look better with higher replication for groups
+plot(wuni_disp, label = F)
+
+## Plot with 1 standard deviation ellipses around the group medians
+## sample size issue here, but you get the idea
+plot(wuni_disp, label = F, hull = F, ellipse = T)
+
+## Within-group dispersion that PERMDISP is testing
+boxplot(wuni_disp, las = 2, cex.lab=1.5)
+?boxplot
+
+## pairwise p-values
+TukeyHSD(wuni_disp)
+scores(wuni_disp, 1:4, display = "centroids")
+rda(otu_table)
+```
+
+##Weighted unifrac beta diversity plot with phyloseq
+Used to check the PCoA %
+```{r}
+beta_wu <- ordinate(physeq_filtered3, "PCoA", "wunifrac")
+beta_wu_plot = plot_ordination(physeq_filtered2, beta_wu, type="Tissue_types", color="Tissue_types", shape="Tissue_types", title="PCoA Weighted Unifrac") + stat_ellipse(type = "t", linetype = 3) + stat_ellipse(type = "t") + theme_bw()+labs(colour = "Tissue_types") #To add arrows https://neavemj.github.io/posts/coralMicrobiome
+beta_wu_plot
+```
+
+#Final weighted unifrac plot
+```{r}
+label_perm <- expression(paste("PERMANOVA, ",R^2 ,"= 0.16, ", paste(italic('p')),"=0.001"))
+beta_scatter = as.data.frame(beta_wu[["vectors"]])
+beta_meta = merge(beta_scatter,metadata,by = 0,all=F)
+pmain_wuF = ggscatter(beta_meta, x = "Axis.1", y = "Axis.2", 
+                      color = "Tissue_types", palette = "aaas",
+                      ellipse = TRUE, ellipse.level=.5,
+                      mean.point = F, mean.point.size = 5, 
+                      star.plot = F) +
+  labs(x = "PCoA 1 (40.2%) ", y = "PCoA 2 (19.3%)", 
+       colour = "Tissue_types", fill = "Tissue_types") +
+  annotate("text", x = -0.04, y = -0.06, label = label_perm, colour = "black")
+pmain_wuF
+```
+
+##Bray-Curtis dissimilarity statistics
+```{r}
+## PERMANOVA
+library(vegan)
+bray_dist = phyloseq::distance(physeq_filtered2, method="bray") #RUN this only once because it takes a lot of time
+adonis_bray = adonis2(bray_dist ~ sample_data(physeq_filtered2)$Timepoints)
+adonis_bray
+## Significant PERMANOVA indicates that centroid (or spatial median) among groups is different and/or with-group dispersion among groups is different
+## PERMDISP
+bray_disp <-betadisper(wuinfrac_dist, sample_data(physeq_filtered2)$Timepoints, type=c("median"))
+anova(bray_disp)
+## If PERMANOVA and PERMDISP are both significant, you can use plotting to tell if PERMANOVA was significant based on centroid (or spatial median)
+plot(bray_disp)
+#?plot.betadisper
+## Would look better with higher replication for groups
+plot(bray_disp, label = F)
+## Plot with 1 standard deviation ellipses around the group medians
+## sample size issue here, but you get the idea
+plot(bray_disp, label = F, hull = F, ellipse = T)
+## Within-group dispersion that PERMDISP is testing
+boxplot(bray_disp, las = 2, cex.lab=1.5)
+?boxplot
+## pairwise p-values
+TukeyHSD(bray_disp)
+scores(bray_disp, 1:4, display = "centroids")
+```
+
+##Bray beta diversity plot
+```{r}
+beta_bray <- ordinate(physeq_filtered2, "PCoA", "bray") #RUN this only ONCE because it takes a lot of time
+beta_bray_plot = plot_ordination(physeq_filtered2, beta_bray, type="Timepoints", color="Timepoints", shape="Timepoints", title="PCoA Weighted Unifrac") + stat_ellipse(type = "t", linetype = 3) + stat_ellipse(type = "t") + theme_bw()+labs(colour = "Timepoints") #To add arrows https://neavemj.github.io/posts/coralMicrobiome
+beta_bray_plot
+```
+
+##Bray-Curtis final plot
+```{r}
+label_perm <- expression(paste("PERMANOVA, ",R^2 ,"= 0.12, ", paste(italic('p')),"=0.001"))
+#library(lemon)
+beta_scatter = as.data.frame(beta_bray[["vectors"]])
+beta_meta = merge(beta_scatter,metadata,by = 0,all=F)
+pmain_brayF = ggscatter(beta_meta, x = "Axis.1", y = "Axis.2", color = "Timepoints", palette = "aaas",ellipse = TRUE, ellipse.level=.5,mean.point = F, mean.point.size = 5, star.plot = F) +labs(x = "PCoA 1 (24.1%) ", y = "PCoA 2 (20.6%)", colour = "Timepoints", fill = "Timepoints")+ annotate("text", x = -0.12, y = -0.2, label = label_perm, colour = "black")
+pmain_brayF
+```
+
+##Bray-Curtis dissimilarity statistics
+```{r}
+## PERMANOVA
+library(vegan)
+bray_dist = phyloseq::distance(physeq_filtered2, method="bray") #RUN this only once because it takes a lot of time
+adonis_bray = adonis2(bray_dist ~ sample_data(physeq_filtered2)$Tissue_types)
+adonis_bray
+## Significant PERMANOVA indicates that centroid (or spatial median) among groups is different and/or with-group dispersion among groups is different
+## PERMDISP
+bray_disp <-betadisper(wuinfrac_dist, sample_data(physeq_filtered2)$Tissue_types, type=c("median"))
+anova(bray_disp)
+## If PERMANOVA and PERMDISP are both significant, you can use plotting to tell if PERMANOVA was significant based on centroid (or spatial median)
+plot(bray_disp)
+#?plot.betadisper
+## Would look better with higher replication for groups
+plot(bray_disp, label = F)
+## Plot with 1 standard deviation ellipses around the group medians
+## sample size issue here, but you get the idea
+plot(bray_disp, label = F, hull = F, ellipse = T)
+## Within-group dispersion that PERMDISP is testing
+boxplot(bray_disp, las = 2, cex.lab=1.5)
+?boxplot
+## pairwise p-values
+TukeyHSD(bray_disp)
+scores(bray_disp, 1:4, display = "centroids")
+```
+
+##Bray beta diversity plot
+```{r}
+beta_bray <- ordinate(physeq_filtered2, "PCoA", "bray") #RUN this only ONCE because it takes a lot of time
+beta_bray_plot = plot_ordination(physeq_filtered2, beta_bray, type="Tissue_types", color="Tissue_types", shape="Tissue_types", title="PCoA Weighted Unifrac") + stat_ellipse(type = "t", linetype = 3) + stat_ellipse(type = "t") + theme_bw()+labs(colour = "Tissue_types") #To add arrows https://neavemj.github.io/posts/coralMicrobiome
+beta_bray_plot
+```
+
+
+##Bray-Curtis final plot
+```{r}
+label_perm <- expression(paste("PERMANOVA, ",R^2 ,"= 0.12, ", paste(italic('p')),"=0.001"))
+#library(lemon)
+beta_scatter = as.data.frame(beta_bray[["vectors"]])
+beta_meta = merge(beta_scatter,metadata,by = 0,all=F)
+pmain_brayF = ggscatter(beta_meta, x = "Axis.1", y = "Axis.2", color = "Tissue_types", palette = "aaas",ellipse = TRUE, ellipse.level=.5,mean.point = F, mean.point.size = 5, star.plot = F) +labs(x = "PCoA 1 (24.1%) ", y = "PCoA 2 (20.6%)", colour = "Tissue_types", fill = "Tissue_types")+ annotate("text", x = -0.12, y = -0.2, label = label_perm, colour = "black")
+pmain_brayF
+```
+
+##Arranging both diversity plots into one
+```{r}
+beta_div_plots = ggarrange(pmain_brayF,pmain_wuF,nrow = 2, ncol = 1, align="hv", common.legend = TRUE, labels = c("C","D")) 
+beta_div_plots
+```

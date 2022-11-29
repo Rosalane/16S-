@@ -1,0 +1,186 @@
+---
+title: "Stacked_area_plots"
+author: "Kristi Gdanetz MacCready"
+date: "6/2/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Documents/Sundin_Lab/Rot_microbiome/")
+```
+
+# Load packages
+```{r}
+library(vegan)
+library(tidyverse)
+library(readxl)
+library(agricolae)
+library(phyloseq)
+library(venn)
+library(VennDiagram)
+library(cowplot)
+theme_set(theme_cowplot())
+set.seed(7)
+source("~/Documents/GitHub/DenefLab-MicrobeMiseq/R/miseqR.R")
+```
+
+# Import data
+Import object created in AlphaDiversity_analysis.Rmd 
+```{r}
+psq <- readRDS(file = "psq_object.RDS")
+
+psq
+# Summary statistics on read counts 
+min(sample_sums(psq)) #23
+mean(sample_sums(psq)) #15662
+max(sample_sums(psq))  #28913
+```
+
+# Format data
+make new data frame for preotobacteria only
+```{r}
+proteo <- psq %>%
+  # remove chloroplasts
+  subset_taxa(Phylum != "Cyanobacteria/Chloroplast") %>%
+  # filter for taxa and samples of interest 
+  subset_taxa(Phylum == "Proteobacteria") %>%
+  subset_samples(Treatment == "Untreated") %>%
+  subset_samples(Tissue == "Skin") %>%
+  # group OTUs based on family level classification, calculate relative abundace 
+  tax_glom("Family") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  # make long format
+  psmelt() %>%
+  # group replicate samples 
+  group_by(OTU, Tissue, Timepoint, Cultivar, Treatment, Family) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  mutate(Timepoint = recode(Timepoint,
+                            "Day 0" = 0,
+                            "Day 14" = 14,
+                            "Day 28" = 28,
+                            "Day 42" = 42,
+                            "Rotten" = 72))
+
+# add together both tissues (pulp/skin)
+
+# subset for 20 most abundant genera
+```
+
+# Most abundant family
+```{r}
+jon_tab1 <- proteo %>%
+  filter(Cultivar == "Jonathan") %>%
+  group_by(Tissue, Timepoint, Family) %>%
+  summarise(Total = sum(Mean_abund)) %>%
+  arrange(desc(Total)) %>%
+  filter(Total >= 0.01) %>%
+  droplevels("Family") 
+
+write_delim(jon_tab1, file = "~/Desktop/jon_tab1.csv", delim = ",", col_names = TRUE)
+
+# families with greater than 0.10 abundance in jonathan samples 
+keep_fam <- c("Acetobacteraceae", "Alcaligenaceae", "Alphaproteobacteria_unclassified", "Aurantimonadaceae",
+              "Azonexaceae", "Betaproteobacteria_unclassified", "Bradyrhizobiaceae", "Burkholderiaceae",
+              "Comamonadaceae", "Devosiaceae", "Enterobacteriaceae", "Erwiniaceae", "Erythrobacteraceae",
+              "Gammaproteobacteria_unclassified", "Methylobacteriaceae", "Morganellaceae", "Oxalobacteraceae",
+              "Pectobacteriaceae", "Pelomicrobium", "Phyllobacteriaceae", "Polyangiaceae",
+              "Proteobacteria_unclassified",
+              "Pseudomonadaceae", "Reyranellaceae", "Rhizobiaceae", "Rhizobiales_unclassified",
+              "Sphingomonadaceae", "Sphingomonadales_unclassified", "Wohlfahrtiimonas", "Xanthomonadaceae")
+
+jon_tab2 <- jon_tab1 %>%
+  filter(Family %in% keep_fam)
+```
+
+# Plot by family
+```{r}
+area1 <- proteo %>%
+  filter(Cultivar == "Jonathan") %>%
+  mutate(Family = recode(Family, #relabel OTUs that do not have 0.01 abund in more than 1 sample
+                         Azonexaceae = "Other",
+                         Azospirillaceae = "Other",
+                         Bacteriovoracaceae = "Other",
+                         Bacteriovoracales_unclassified = "Other",
+                         Brucellaceae = "Other",
+                         Boseaceae = "Other",
+                         Beijerinckiaceae = "Other",
+                         Caulobacteraceae = "Other",
+                         Cystobacteraceae = "Other",
+                         Cellvibrionaceae = "Other",
+                         Deltaproteobacteria_unclassified = "Other",
+                         Devosiaceae = "Other",
+                         Halomonadaceae = "Other",
+                         Hydrogenophilaceae = "Other",
+                         Hyphomicrobiaceae = "Other",
+                         Labilitrichaceae = "Other",
+                         Legionellaceae = "Other",
+                         Myxococcales_unclassified = "Other",
+                         Neisseriaceae = "Other",
+                         Nevskiaceae = "Other",
+                         Oligoflexales_unclassified = "Other",
+                         Pasteurellaceae = "Other",
+                         Pectobacteriaceae = "Other",
+                         Phreatobacteraceae = "Other",
+                         Rhodobacteraceae = "Other",
+                         Rhodospirillales_unclassified = "Other",
+                         Rickettsiaceae = "Other",
+                         Roseiarcaceae = "Other",
+                         Sutterellaceae = "Other",
+                         Wohlfahrtiimonas = "Other",
+                         Yersiniaceae = "Other",
+                         Zoogloeaceae = "Other" ) ) %>% 
+  group_by(Tissue, Timepoint, Cultivar, Treatment, Family) %>%
+  summarise(Mean_abund = sum(Mean_abund)) %>% 
+  ggplot(aes(x = Timepoint, y = Mean_abund, fill = Family)) +
+  geom_area(color = "white", size = 0.1) +
+  ylab("Relative Abundance") +
+  scale_x_continuous(name = "Timepoint (days)",
+                     breaks = c(0, 14, 28, 42, 72),
+                     labels = c(0, 14, 28, 42, 72) ) + 
+  scale_fill_manual(name = "Family", guide=guide_legend(ncol=1),
+                    values = c(#ED1E24", "#F58565", #red
+                                "#40B9EB", "#B8DDF5", #lt blue
+                                "#FAA51A", "#FEC679", #orange
+                                "#426FB6", "#AAB7DD", #dark blue
+                                #"#F4EB21", "#F8F18C", #yellow
+                                "#9ACA3C", "#C2DD89", #yellow-green
+                                "#8750A0", "#C4ACD3", #mauve
+                                "#71C054", "#A9D595", #green
+                                "#D0499A", "#DF92BF", #mauve-pink
+                                "#70C6A5", "#AADAC6", #blue-green
+                                "#ED187A", "#F7AEC0", #pink
+                                "#5B51A3", "#afa9d3", #violet
+                                "#ED1E24", "#F58565", #red
+                                "#40B9EB", "#B8DDF5", #lt blue
+                                "#FAA51A", "#FEC679", #orange
+                                "#426FB6", "#AAB7DD", #dark blue
+                                "#F4EB21", #"#F8F18C", #yellow
+                                "#5B51A3", "#afa9d3", #violet
+                                "#9ACA3C", "#C2DD89", #yellow-green
+                                "#8750A0", "#C4ACD3", #mauve
+                                "#71C054", "#A9D595", #green
+                                "#D0499A", "#DF92BF", #mauve-pink
+                                "#70C6A5", "#AADAC6", #blue-green
+                                "#ED187A", "#F7AEC0" 
+                                ))+
+  theme(axis.text = element_text(size = 8), #reduce text size
+        plot.title = element_text(size = 12, face = "bold"),
+        axis.title = element_text(size = 8),
+        legend.text = element_text(size = 6),  
+        legend.title = element_text(size=8),
+        legend.key.size = unit(2, "mm"), #reduce legend size
+        legend.justification = "top") +  #align with top of panel
+  ggtitle("Jonathan Pulp")
+area1
+```
+
+# Save figures
+```{}
+save_plot()
+```
+
+-----
+end

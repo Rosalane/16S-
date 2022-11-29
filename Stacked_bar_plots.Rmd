@@ -1,0 +1,759 @@
+---
+title: "Rot Microbiome 4"
+author: "Kristi Gdanetz MacCready"
+date: "4/6/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Documents/Sundin_Lab/Rot_microbiome/")
+```
+
+# Load packages
+```{r}
+library(vegan)
+library(tidyverse)
+library(readxl)
+library(agricolae)
+library(phyloseq)
+library(venn)
+library(VennDiagram)
+library(cowplot)
+theme_set(theme_cowplot())
+set.seed(7)
+source("~/Documents/GitHub/DenefLab-MicrobeMiseq/R/miseqR.R")
+```
+
+# Import data 
+Import object created in AlphaDiversity_analysis.Rmd 
+```{r}
+psq <- readRDS(file = "psq_object.RDS")
+psq
+# Summary statistics on read counts 
+min(sample_sums(psq)) #23
+mean(sample_sums(psq)) #15662
+max(sample_sums(psq))  #28913
+```
+
+Import dataframe from Shared_Table_Formatting.Rmd
+```{r}
+tax <- readRDS(file = "tax.RDS")
+
+shared_phylum<- readRDS(file = "shared_phylum.RDS")
+```
+
+# Other groups
+Generate summaries of low abundance taxa to replace with "other" value in barplots
+```{r eval=FALSE, include=FALSE}
+# # occurences of each phylum in all data 
+# counts1 <- shared_phylum %>%
+#   column_to_rownames(var = "Sample_ID") %>%
+#   colSums() %>%
+#   as.data.frame() 
+
+# Occur in less than 10 samples:
+#Chlamydiae, Fusobacteria, Synergistetes, Nitrospirae, candidate_division_WPS-1, Armatimonadetes, Parcubacteria, Deinococcus-Thermus
+# not in all, keep color codes for these: Chloroflexi, Latescibacteria
+
+# phylum to recode as "other"; can remove colors for these groups
+new_phyla <- tax %>%
+  mutate(Phylum = recode(Phylum,
+                         "Armatimonadetes" = "Other",
+                         "candidate_division_WPS-1" = "Other",
+                         "Chlamydiae" = "Other", 
+                         "Deinococcus-Thermus" = "Other",
+                         "Fusobacteria" = "Other", 
+                         "Nitrospirae" = "Other", 
+                         "Parcubacteria" = "Other",
+                         "Synergistetes" = "Other" ))
+```
+
+Total relative abundance in cultivar timecourse
+```{r}
+counts2 <- phylum %>%
+  group_by(Phylum) %>%
+  summarise(Abund_sum = sum(Mean_abund))
+# less than 0.10, replace with "Other": 
+#Chlamydiae, Fusobacteria, Nitrospirae, Synergistetes, Armatimonadetes, candidate_division_WPS-1, Parcubacteria, Deinococcus-Thermus, 
+# not in all, keep color codes for these: Chloroflexi, Latescibacteria, 
+
+new_phyla2 <- tax %>%
+  mutate(Phylum = recode(Phylum,
+                         "Armatimonadetes" = "Other",
+                         "candidate_division_WPS-1" = "Other",
+                         "Chlamydiae" = "Other", 
+                         "Deinococcus-Thermus" = "Other",
+                         "Fusobacteria" = "Other", 
+                         "Nitrospirae" = "Other", 
+                         "Parcubacteria" = "Other",
+                         "Synergistetes" = "Other" ,
+                         "Chloroflexi" = "Other",
+                         "Latescibacteria" = "Other"))
+```
+total relative abundace in chitosan dataset
+```{r}
+counts3 <- phylum_chito %>%
+  group_by(Phylum) %>%
+  summarise(Abund_sum = sum(Mean_abund)) 
+# less than 0.10, replace with "Other": 
+#Armatimonadetes, candidate_division_WPS-1, Chlamydiae, Deinococcus-Thermus, Fusobacteria, Nitrospirae, Parcubacteria, Synergistetes
+# not in all, keep color codes for these: Abditibacteriota, Chloroflexi, Gemmatimonadetes, 
+
+new_phyla3 <- tax %>%
+  mutate(Phylum = recode(Phylum,
+                         "Armatimonadetes" = "Other",
+                         "candidate_division_WPS-1" = "Other",
+                         "Chlamydiae" = "Other", 
+                         "Deinococcus-Thermus" = "Other",
+                         "Fusobacteria" = "Other", 
+                         "Nitrospirae" = "Other", 
+                         "Parcubacteria" = "Other",
+                         "Synergistetes" = "Other",
+                         "Abditibacteriota" = "Other",
+                         "Chloroflexi" = "Other", 
+                         "Gemmatimonadetes" = "Other"))
+```
+total relative abundace in rotten samples
+```{r}
+counts4 <- phylum_rot %>%
+  group_by(Phylum) %>%
+  summarise(Abund_sum = sum(Mean_abund)) 
+# less than 0.10, replace with "Other":
+#Chlamydiae,Fusobacteria,Nitrospirae,Synergistetes,Armatimonadetes,candidate_division_WPS-1, Parcubacteria, Deinococcus-Thermus
+# not in all, keep color codes for these: Latescibacteria, 
+
+new_phyla4 <- tax %>%
+  mutate(Phylum = recode(Phylum,
+                         "Armatimonadetes" = "Other",
+                         "candidate_division_WPS-1" = "Other",
+                         "Chlamydiae" = "Other", 
+                         "Deinococcus-Thermus" = "Other",
+                         "Fusobacteria" = "Other", 
+                         "Nitrospirae" = "Other", 
+                         "Parcubacteria" = "Other",
+                         "Synergistetes" = "Other",
+                         "Latescibacteria" = "Other"))
+```
+
+# Color palette
+### Phyla 21 colors 
+generated from https://medialab.github.io/iwanthue/
+options: pimp, 21, force vector, sort by diff
+```{r eval=FALSE, include=FALSE}
+phy_colors21 <- c("#6c679a", "#93b824", "#af00c9", "#017100", "#8300a9",
+                "#2fc185", "#3f1ba2", "#ab8800", "#302a95", "#ff7823",
+                "#006dc5", "#b80018", "#44b0ff", "#754700", "#910075",
+                "#9bb455", "#7f002b", "#00471e", "#ff637f", "#73733e",
+                "#d5a078", "gray", "black")
+
+phy_labels21 <- c("Abditibacteriota", "Acidobacteria", "Actinobacteria", "Armatimonadetes", "Unclassified Bacteria",
+                "Bacteroidetes", "Candidate Division WPS-1", "Chlamydiae", "Chloroflexi", "Chloroplast/Cyanobacteria",
+                "Deinococcus-Thermus", "Firmicutes", "Fusobacteria", "Gemmatimonadetes", "Latescibacteria",
+                "Nitrospirae", "Parcubacteria", "Planctomycetes", "Proteobacteria", "Synergistetes",
+                "Verrucomicrobia")
+
+phy_names21 <- c("Abditibacteriota", "Acidobacteria", "Actinobacteria", "Armatimonadetes", "Bacteria_unclassified",
+                "Bacteroidetes", "candidate_division_WPS-1", "Chlamydiae", "Chloroflexi", "Cyanobacteria/Chloroplast",
+                "Deinococcus-Thermus", "Firmicutes", "Fusobacteria", "Gemmatimonadetes", "Latescibacteria",
+                "Nitrospirae", "Parcubacteria", "Planctomycetes", "Proteobacteria", "Synergistetes",
+                "Verrucomicrobia")
+```
+
+### Phyla 13 colors
+generated from https://medialab.github.io/iwanthue/ 
+options: pimp, 13, force vector, sort by chroma
+Added neutral gray to color list; will use for "other" group
+```{r}
+## original color order:
+# phy_colors13 <- c("#007aa8","#662052","#e190d3","#019863","#ff7a86",
+#                   "#926800","#94b747","#891700","#498200","#0389f8",
+#                   "#cb0050","#a775ff","#ff15b1", "#8e918f")
+
+# actinobacteria = bubble gum pink; bacteroidetes = salmon pink; unclassified bacteria = dark green; firmicutes = maroon; proteobacteria = lt purple;  
+# switch proteobacteria "#a775ff" and abditibacteriota "#007aa8"
+# actinobacteria "#662052" and gemmatimonadetes "#498200"
+# firmicutes "#891700" and plactomycetes "#cb0050" 
+# actinobacteria "#e190d3" and latescibacteria "#0389f8"
+
+# updated color order: 
+phy_colors13 <- c("#a775ff","#498200","#0389f8","#019863","#ff7a86",
+                  "#926800","#94b747","#cb0050","#662052","#e190d3",
+                  "#891700","#007aa8","#ff15b1", "#8e918f")
+
+phy_labels13 <- c("Abditibacteriota", "Acidobacteria", "Actinobacteria", "Unclassified Bacteria", "Bacteroidetes",
+                 "Chloroflexi", "Chloroplast/Cyanobacteria", "Firmicutes", "Gemmatimonadetes", "Latescibacteria",
+                 "Planctomycetes", "Proteobacteria", "Verrucomicrobia", "Other")
+
+phy_names13 <- c("Abditibacteriota", "Acidobacteria", "Actinobacteria", "Bacteria_unclassified", "Bacteroidetes",
+                 "Chloroflexi", "Cyanobacteria/Chloroplast", "Firmicutes", "Gemmatimonadetes", "Latescibacteria",
+                 "Planctomycetes", "Proteobacteria", "Verrucomicrobia", "Other")
+```
+
+# Phylum bar plots
+
+### No chloroplasts
+Format phyloseq object, remove chloroplasts, calculate mean abundace per group
+```{r}
+phylum <- psq %>%
+  subset_taxa(Phylum != "Cyanobacteria/Chloroplast") %>%
+  subset_samples(Timepoint != "Rotten") %>%
+  subset_samples(Treatment == "Untreated") %>%
+  tax_glom("Phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+
+#make it after making the bar plot. Other because it is very less.
+  #mutate(Phylum = recode(Phylum,
+                        # "Armatimonadetes" = "Other",
+                         #"candidate_division_WPS-1" = "Other",
+                         #"Chlamydiae" = "Other", 
+                         #"Deinococcus-Thermus" = "Other",
+                         #"Fusobacteria" = "Other", 
+                         #"Nitrospirae" = "Other", 
+                         #"Parcubacteria" = "Other",
+                         #"Synergistetes" = "Other" )) %>% 
+
+  group_by(OTU, Tissue, Timepoint, Cultivar, Treatment, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+Make the plot 
+```{r}
+plot_phylum <- phylum %>%
+  ggplot(aes(x = Timepoint, y = Mean_abund, fill = Phylum, 
+             Tissue, Tree, Cultivar)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(Cultivar~Tissue) +
+  # Clean up labels
+  ylab("Relative Abundance") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) + #reduce legend size
+  # customize plot colors
+  scale_fill_manual(name = "Phylum", #legend name
+                    breaks = phy_names13, #call legend labels
+                    labels = phy_labels13, #cleaned up labels
+                    values = phy_colors13, #custom colors 
+                    guide = guide_legend(ncol = 1)) #force one column 
+plot_phylum
+```
+
+### With chloropasts
+Repeat, but keep chloroplasts
+```{r}
+phylum_chloro <- psq %>%
+  # subset for samples of interest
+  subset_samples(Timepoint != "Rotten") %>%
+  subset_samples(Treatment == "Untreated") %>%
+  # combine OTUs based on phylum assignments
+  tax_glom("Phylum") %>%
+  # convert to relative abundance
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  # make data frame
+  psmelt() %>%
+  # replace low abundance taxa with "other"
+  mutate(Phylum = recode(Phylum,
+                         "Armatimonadetes" = "Other",
+                         "candidate_division_WPS-1" = "Other",
+                         "Chlamydiae" = "Other", 
+                         "Deinococcus-Thermus" = "Other",
+                         "Fusobacteria" = "Other", 
+                         "Nitrospirae" = "Other", 
+                         "Parcubacteria" = "Other",
+                         "Synergistetes" = "Other" )) %>% 
+  # calculate mean relative abunance of replicates 
+  group_by(OTU, Tissue, Timepoint, Cultivar, Treatment, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame()
+```
+
+```{r}
+plot_chloro <- phylum_chloro %>%
+  ggplot(aes(x = Timepoint, y = Mean_abund, fill = Phylum, 
+             Tissue, Tree, Cultivar)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(Cultivar~Tissue) +
+  # format legend
+  guides(fill = guide_legend(ncol = 1)) +  
+  # Clean up labels
+  ylab("Relative Abundance") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) + #reduce legend size
+  # customize plot colors
+  scale_fill_manual(name = "Phylum", #legend name
+                    breaks = phy_names13, #call legend labels
+                    labels = phy_labels13, #cleaned up labels
+                    values = phy_colors13, #custom colors 
+                    guide = guide_legend(ncol = 1)) #force one column 
+plot_chloro
+```
+
+### Rotten
+Format phyloseq object, remove chloroplasts, include rotten sames as timepoint, calculate mean abundace per group
+```{r}
+phylum_rot <- psq %>%
+  subset_taxa(Phylum != "Cyanobacteria/Chloroplast") %>%
+  subset_samples(Treatment == "Untreated") %>%
+  tax_glom("Phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+  mutate(Phylum = recode(Phylum,
+                         "Armatimonadetes" = "Other",
+                         "candidate_division_WPS-1" = "Other",
+                         "Chlamydiae" = "Other", 
+                         "Deinococcus-Thermus" = "Other",
+                         "Fusobacteria" = "Other", 
+                         "Nitrospirae" = "Other", 
+                         "Parcubacteria" = "Other",
+                         "Synergistetes" = "Other",
+                         "Latescibacteria" = "Other")) %>% 
+  group_by(OTU, Tissue, Timepoint, Cultivar, Treatment, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>% 
+  as.data.frame()
+```
+Make the plot 
+```{r}
+plot_rot <- phylum_rot %>%
+  ggplot(aes(x = Timepoint, y = Mean_abund, fill = Phylum, 
+             Tissue, Cultivar)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(Cultivar~Tissue) +
+  # format legend
+  guides(fill = guide_legend(ncol = 1)) +  
+  # Clean up labels
+  ylab("Relative Abundance") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) + #reduce legend size 
+  # customize plot colors
+  scale_fill_manual(name = "Phylum", #legend name
+                    breaks = phy_names13, #call legend labels
+                    labels = phy_labels13, #cleaned up labels
+                    values = phy_colors13, #custom colors 
+                    guide = guide_legend(ncol = 1)) #force one column 
+plot_rot
+```
+
+### Chitosan
+Subset for chitosan and mock treated samples, format phyloseq object
+```{r}
+phylum_chito <- psq %>%
+  subset_taxa(Phylum != "Cyanobacteria/Chloroplast") %>%
+  subset_samples(Cultivar == "Jonathan") %>%
+  subset_samples(Treatment == "Chitosan" | Treatment == "Mock") %>%
+  tax_glom("Phylum") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+  mutate(Phylum = recode(Phylum,
+                         "Armatimonadetes" = "Other",
+                         "candidate_division_WPS-1" = "Other",
+                         "Chlamydiae" = "Other", 
+                         "Deinococcus-Thermus" = "Other",
+                         "Fusobacteria" = "Other", 
+                         "Nitrospirae" = "Other", 
+                         "Parcubacteria" = "Other",
+                         "Synergistetes" = "Other",
+                         "Abditibacteriota" = "Other",
+                         "Chloroflexi" = "Other", 
+                         "Gemmatimonadetes" = "Other")) %>% 
+  group_by(OTU, Tissue, Timepoint, Cultivar, Treatment, Phylum) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>% 
+  as.data.frame()
+```
+Make the plot
+```{r}
+plot_chito <- phylum_chito %>%
+  ggplot(aes(x = Timepoint, y = Mean_abund, fill = Phylum, 
+             Tissue, Treatment)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(Treatment~Tissue) +
+  # format legend
+  guides(fill = guide_legend(ncol = 1)) +  
+  # Clean up labels
+  ylab("Relative Abundance") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) + #reduce legend size 
+  # customize plot colors
+  scale_fill_manual(name = "Phylum", #legend name
+                    breaks = phy_names13, #call legend labels
+                    labels = phy_labels13, #cleaned up labels
+                    values = phy_colors13, #custom colors 
+                    guide = guide_legend(ncol = 1)) #force one column 
+plot_chito
+```
+
+# Proteobacteria by genus
+Format phyloseq object, filter for proteobacteria, remove chloroplasts, calculate mean abundace per group
+```{r}
+proteobacteria <- psq %>%
+  subset_taxa(Phylum != "Cyanobacteria/Chloroplast") %>%
+  subset_taxa(Phylum == "Proteobacteria") %>%
+  subset_samples(Treatment == "Untreated") %>%
+  tax_glom("Genus") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+  group_by(OTU, Tissue, Timepoint, Cultivar, Treatment, Genus) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  #filter(Mean_abund >= 1.00) %>%
+  mutate(Genus = recode(Genus, 
+                        Acetobacteraceae_unclassified = "Other",
+                        Acidisoma = "Other",
+                        Acidocella = "Other",
+                        Acinetobacter = "Other",
+                        Alcaligenaceae_unclassified = "Other",
+                        Altererythrobacter = "Other",
+                        Aminobacter = "Other",
+                        Aquabacterium = "Other",
+                        Archangium = "Other",
+                        Arsenophonus = "Other",
+                        Aurantimonadaceae_unclassified = "Other",
+                        Aureimonas = "Other",
+                        Azohydromonas = "Other",
+                        Bacteriovoracales_unclassified = "Other",
+                        Beijerinckiaceae_unclassified = "Other",
+                        Belnapia = "Other",
+                        Bosea = "Other",
+                        Bradyrhizobiaceae_unclassified = "Other",
+                        Bradyrhizobium = "Other",
+                        Brevundimonas = "Other",
+                        Brucella = "Other",
+                        Buchnera = "Other",
+                        Burkholderiaceae_unclassified = "Other",
+                        Burkholderiales_unclassified = "Other",
+                        Caulobacter = "Other",
+                        Caulobacteraceae_unclassified = "Other",
+                        Cellvibrio = "Other",
+                        Comamonas = "Other",
+                        Croceibacterium = "Other",
+                        Cupriavidus = "Other",
+                        Curvibacter = "Other",
+                        Cystobacter = "Other",
+                        Cystobacteraceae_unclassified = "Other",
+                        Dechloromonas = "Other",
+                        Delftia = "Other",
+                        Deltaproteobacteria_unclassified = "Other",
+                        Devosia = "Other",
+                        Dokdonella = "Other",
+                        Duganella = "Other",
+                        Duodenibacillus = "Other",
+                        Dyella = "Other",
+                        Enhydrobacter = "Other",
+                        Erythrobacteraceae_unclassified = "Other",
+                        Frateuria = "Other",
+                        Gammaproteobacteria_unclassified = "Other",
+                        Gluconobacter = "Other",
+                        Haematobacter = "Other",
+                        Halomonas = "Other",
+                        Hyphomicrobiaceae_unclassified = "Other",
+                        Kingella = "Other",
+                        Klebsiella = "Other",
+                        Komagataeibacter = "Other",
+                        Kosakonia = "Other",
+                        Labilithrix = "Other",
+                        Legionella = "Other",
+                        Luteibacter = "Other",
+                        Mameliella = "Other",
+                        Mesorhizobium = "Other",
+                        Methylobacteriaceae_unclassified = "Other",
+                        Methylorubrum = "Other",
+                        Microvirga = "Other",
+                        Moraxellaceae_unclassified = "Other",
+                        Myxococcales_unclassified = "Other",
+                        Neorhizobium = "Other",
+                        Nevskia = "Other",
+                        Noviherbaspirillum = "Other",
+                        Novosphingobium = "Other",
+                        Oligoflexales_unclassified = "Other",
+                        Oxalobacteraceae_unclassified = "Other",
+                        Pantoea = "Other",
+                        Paracoccus = "Other",
+                        Pararhizobium = "Other",
+                        Pasteurellaceae_unclassified = "Other",
+                        Pectobacteriaceae_unclassified = "Other",
+                        Peredibacter = "Other",
+                        Phenylobacterium = "Other",
+                        Phreatobacter = "Other",
+                        Phyllobacterium = "Other",
+                        Piscinibacter = "Other",
+                        Polaromonas = "Other",
+                        Polyangiaceae_unclassified = "Other",
+                        Polyangium = "Other",
+                        Proteus = "Other",
+                        Pseudolabrys = "Other",
+                        Psychroglaciecola = "Other",
+                        Ramlibacter = "Other",
+                        Reyranella = "Other",
+                        Rhizobiaceae_unclassified = "Other",
+                        Rhizobium = "Other",
+                        Rhodanobacteraceae_unclassified = "Other",
+                        Rhodobacteraceae_unclassified = "Other",
+                        Rhodoplanes = "Other",
+                        Rhodospirillales_unclassified = "Other",
+                        Rickettsia = "Other",
+                        Roseiarcus = "Other",
+                        Roseivivax = "Other",
+                        Roseomonas = "Other",
+                        Rubellimicrobium = "Other",
+                        Skermanella = "Other",
+                        Sphingobium = "Other",
+                        Sphingomonadales_unclassified = "Other",
+                        Stenotrophomonas = "Other",
+                        Tepidimonas = "Other",
+                        Tepidiphilus = "Other",
+                        Thauera = "Other",
+                        Undibacterium = "Other",
+                        Vampirovibrio = "Other",
+                        Variovorax = "Other",
+                        Wohlfahrtiimonas_unclassified = "Other",
+                        Xanthomonas = "Other",
+                        Yersiniaceae_unclassified = "Other"
+                        )) %>%
+  arrange(desc(Mean_abund))
+```
+
+Make the plot 
+```{r}
+plot_proteo <- proteobacteria %>%
+  ggplot(aes(x = Timepoint, y = Mean_abund, fill = Genus, 
+             Tissue, Tree, Cultivar)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(Cultivar~Tissue) +
+  # Clean up labels
+  ylab("Proteobacteria\nRelative Abundance") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) + #reduce legend size
+  # customize plot colors
+  scale_fill_manual(values = c("#4cbfcf", "#439774", "#6589cc", 
+                               "#96b46e", "#9d4664",
+                                "#906c2d", "#db8bc2", "#c8ab60", 
+                               "#e17e79", "#707a2b",
+                                "#a05032", "#8b60a9", "#3f7933", "#4fc284", "#dd894d",
+                                "#d2468f", "#d23c55", "#d49c2b", 
+                               "#a7b635", "#6f67d7",
+                                "#5db746", "#bd56c3", "#d4502b", "gray"), 
+                    breaks = c("Achromobacter", "Alphaproteobacteria_unclassified","Betaproteobacteria_unclassified",
+                               "Burkholderia",  "Comamonadaceae_unclassified", 
+                               "Enterobacterales_unclassified","Enterobacteriaceae_unclassified", "Escherichia/Shigella", 
+                               "Haemophilus","Massilia",
+                               "Methylobacterium","Neisseria", "Paraburkholderia","Pelomicrobium_unclassified","Pelomonas",
+                               "Phyllobacteriaceae_unclassified","Pseudomonadaceae_unclassified","Proteobacteria_unclassified",
+                               "Pseudomonas","Ralstonia",
+                               "Rhizobiales_unclassified", "Sphingomonadaceae_unclassified",  "Sphingomonas",  "Other"),
+                    labels = c("Achromobacter", "Alphaproteobacteria","Betaproteobacteria","Burkholderia","Comamonadaceae", 
+                               "Enterobacterales","Enterobacteriaceae", "Escherichia/Shigella", "Haemophilus","Massilia",
+                               "Methylobacterium","Neisseria", "Paraburkholderia","Pelomicrobium","Pelomonas",
+                               "Phyllobacteriaceae","Pseudomonadaceae","Proteobacteria","Pseudomonas","Ralstonia",
+                               "Rhizobiales", "Sphingomonadaceae",  "Sphingomonas",  "Other"),
+                    guide = guide_legend(ncol = 2)) # 
+plot_proteo
+```
+
+# Bacteroidetes by genus
+Format data
+```{r}
+bacteroidetes <- psq %>%
+  subset_taxa(Phylum != "Cyanobacteria/Chloroplast") %>%
+  subset_taxa(Phylum == "Bacteroidetes") %>%
+  subset_samples(Treatment == "Untreated") %>%
+  tax_glom("Genus") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+  group_by(OTU, Tissue, Timepoint, Cultivar, Treatment, Genus) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame() %>% 
+  #filter(Mean_abund >= 1.00) %>% arrange(Genus, Cultivar, Tissue, Timepoint)
+  mutate(Genus = recode(Genus, 
+                      Adhaeribacter = "Other",
+                      Adhaeribacter = "Other",
+                      Adhaeribacter = "Other",
+                      Bacteroides = "Other",
+                      Belliella = "Other",
+                      Cloacibacterium = "Other",
+                      Cytophagales_unclassified = "Other",
+                      Dysgonomonadaceae_unclassified = "Other",
+                      Ferruginibacter = "Other",
+                      Flavisolibacter = "Other",
+                      Flavobacteriales_unclassified = "Other",
+                      Flavobacterium = "Other",
+                      Fulvivirgaceae_unclassified = "Other",
+                      Hydrotalea = "Other",
+                      Parabacteroides = "Other",
+                      Parafilimonas = "Other",
+                      Porphyromonadaceae_unclassified = "Other",
+                      Porphyromonas = "Other",
+                      Prevotella = "Other",
+                      Prevotellaceae_unclassified = "Other",
+                      Raineya = "Other",
+                      Segetibacter = "Other")) %>%
+  arrange(desc(Mean_abund))
+```
+Make the plot
+```{r}
+plot_bacter <- bacteroidetes %>%
+  ggplot(aes(x = Timepoint, y = Mean_abund, fill = Genus, 
+             Tissue, Tree, Cultivar)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(Cultivar~Tissue) +
+  # Clean up labels
+  ylab("Bacteroidetes\nRelative Abundance") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straighten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) + #reduce legend size
+  # customize plot colors
+  scale_fill_manual(values = c("#4cbfcf", "#439774", 
+                               "#6589cc",  "#96b46e", 
+                               "#9d4664", "#906c2d", 
+                               "#db8bc2", "#c8ab60", 
+                               "#e17e79", 
+                               "gray",
+                               "#707a2b", "#d2468f", 
+                               "#8b60a9", "#3f7933",  "#4fc284"
+                               #"#dd894d",  "#d23c55", "#d49c2b",  "#a05032",
+                               #"#a7b635", "#6f67d7", "#5db746", "#bd56c3", "#d4502b", 
+                               ), 
+                    breaks = c("Bacteroidales_unclassified", "Bacteroidetes_unclassified",
+                               "Chitinophagaceae_unclassified", "Chryseobacterium", 
+                               "Dyadobacter", "Dysgonomonas", 
+                               "Hydrobacter", "Hymenobacter", 
+                               "Mucilaginibacter",
+                               "Other", 
+                               "Pedobacter", "Sediminibacterium",
+                               "Sphingobacteriaceae_unclassified", "Spirosoma", "Terrimonas"),
+                    labels = c("Bacteroidales unclassified", "Bacteroidetes unclassified",
+                               "Chitinophagaceae unclassified","Chryseobacterium", 
+                               "Dyadobacter", "Dysgonomonas", 
+                               "Hydrobacter", "Hymenobacter", 
+                               "Mucilaginibacter",
+                               "Other", 
+                               "Pedobacter", "Sediminibacterium",
+                               "Sphingobacteriaceae unclassified", "Spirosoma", "Terrimonas"),
+                    guide = guide_legend(ncol = 1)) # 
+plot_bacter
+```
+
+# Acidobacteria by genus
+Format data
+```{r}
+acidobact <- psq %>%
+  subset_taxa(Phylum != "Cyanobacteria/Chloroplast") %>%
+  subset_taxa(Phylum == "Acidobacteria") %>%
+  subset_samples(Treatment == "Untreated") %>%
+  tax_glom("Genus") %>%
+  transform_sample_counts(function(x) { (x / sum(x) ) * 100} ) %>%
+  psmelt() %>%
+  group_by(OTU, Tissue, Timepoint, Cultivar, Treatment, Genus) %>%
+  summarise(Mean_abund = round(mean(Abundance, na.rm = TRUE), digits = 2)) %>%
+  ungroup() %>%
+  as.data.frame() %>% 
+  #filter(Mean_abund >= 1.00) %>% arrange(Genus, Cultivar, Tissue, Timepoint)
+  # mutate(Genus = recode(Genus, 
+  #                     Acidobacteria_Gp1_unclassified = "Other",
+  #                     Acidobacteria_Gp3_unclassified = "Other",
+  #                     Candidatus_Solibacter_unclassified = "Other",
+  #                     Gp17_unclassified = "Other",
+  #                     Gp5_unclassified = "Other",
+  #                     Gp7_unclassified = "Other",
+  #                     Terriglobus_unclassified = "Other")) %>%
+  arrange(desc(Mean_abund))
+```
+Make the plot
+```{r}
+plot_acido <- acidobact %>%
+  ggplot(aes(x = Timepoint, y = Mean_abund, fill = Genus, 
+             Tissue, Tree, Cultivar)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(Cultivar~Tissue) +
+  # Clean up labels
+  ylab("Acidobacteria\nRelative Abundance") +
+  theme(axis.text.y = element_text(size = 10), #reduce y-axis size
+        axis.text.x = element_text(angle = 90, #rotate tick labels
+                                    vjust = 0.5, hjust = 1, #straigten up labels
+                                    size = 10), #reduce x-axis size
+        legend.text = element_text(size = 10)) + #reduce legend size
+  # customize plot colors
+  scale_fill_manual(values = c("#4cbfcf", "#439774", "#6589cc", 
+                               "#96b46e", "#9d4664",
+                                "#906c2d", "#db8bc2", "#c8ab60", 
+                               "#e17e79", "#707a2b",
+                                "#a05032", "#8b60a9", "#3f7933", "#4fc284", "#dd894d",
+                                "#d2468f", "#d23c55", "#d49c2b", 
+                               "#a7b635", "#6f67d7",
+                                "#5db746", "#bd56c3", "#d4502b", "gray"), 
+                    #breaks = c(),
+                    #labels = c(),
+                    guide = guide_legend(ncol = 1)) # 
+plot_acido
+```
+
+# Save bar pots
+```{r}
+# get legend with all phylum + color combinations 
+bar_leg <- get_legend(plot_chloro)
+
+# untreated, no rotten, no chloroplasts
+save_plot(plot = plot_grid((plot_phylum + theme(legend.position = "none")), 
+                           bar_leg, nrow = 1, ncol = 2, rel_widths = c(2, 0.75)), 
+          base_height = 5, base_width = 8,
+          filename = "Figures/Barplot_phylum_NoChloroplast.pdf") 
+
+# untreated, no rotten, WITH chloroplasts
+# cloroplast = lime green
+save_plot(plot = plot_grid((plot_chloro + theme(legend.position = "none")), 
+                           bar_leg, nrow = 1, ncol = 2, rel_widths = c(2, 0.75)), 
+          base_height = 5, base_width = 8,
+          filename = "Figures/Barplot_phylum_chloroplast.pdf") 
+
+# untreated, including rotten, no chloroplasts
+save_plot(plot = plot_grid((plot_rot + theme(legend.position = "none")), 
+                           bar_leg, nrow = 1, ncol = 2, rel_widths = c(2, 0.75)), 
+          base_height = 5, base_width = 8,
+          filename = "Figures/Barplot_phylum_rotten.pdf") 
+
+# chitosan treatments, jonathan only
+save_plot(plot = plot_grid((plot_chito + theme(legend.position = "none")), 
+                           bar_leg, nrow = 1, ncol = 2, rel_widths = c(2, 0.75)), 
+          base_height = 5, base_width = 8,
+          filename = "Figures/Barplot_phylum_chitosan.pdf")
+
+# proteobateria by genera
+save_plot(plot = plot_proteo, base_height = 5, base_width = 8,
+          filename = "Figures/Barplot_proteobacteria_genus.pdf")
+# bacteroidetes by genera
+save_plot(plot = plot_bacter, base_height = 5, base_width = 8,
+          filename = "Figures/Barplot_bacteroidetes_genus.pdf")
+# acidobacteria by genera
+save_plot(plot = plot_acido, base_height = 5, base_width = 8,
+          filename = "Figures/Barplot_acidobacteria_genus.pdf")
+```
+
+
+# Export
+```{r}
+
+```
+
+-----
+end
